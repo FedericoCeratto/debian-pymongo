@@ -1,0 +1,27 @@
+Source: pymongo
+Section: python
+Priority: optional
+Maintainer: Federico Ceratto <federico.ceratto@gmail.com>
+Build-Depends: debhelper (>= 7.0.50~), python-all-dev, python-support (>= 0.90.0~), python-setuptools
+Standards-Version: 3.9.1
+Homepage: http://api.mongodb.org/python/
+Vcs-Git: git://git.debian.org/git/collab-maint/pymongo.git
+Vcs-Browser: http://git.debian.org/?p=collab-maint/pymongo.git
+
+Package: python-pymongo
+Architecture: any
+Depends: ${shlibs:Depends}, ${python:Depends}, ${misc:Depends}
+Description: Python interface to the MongoDB document-oriented database
+ MongoDB is a high-performance, open source, schema-free
+ document-oriented data store. Pymongo provides an interface
+ to easily access it from Python.
+
+Package: python-gridfs
+Architecture: all
+Depends: python-pymongo, ${python:Depends}, ${misc:Depends}
+Description: Python implementation of GridFS for MongoDB
+ GridFS is a storage specification for large objects in MongoDB.
+ The Python gridfs module is an implementation based
+ on the pymongo module. It provides a file-like interface.
+
+
