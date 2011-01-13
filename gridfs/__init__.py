@@ -87,8 +87,11 @@ class GridFS(object):
         >>>     f.close()
 
         `data` can be either an instance of :class:`str` or a
-        file-like object providing a :meth:`read` method. Any keyword
-        arguments will be passed through to the created file - see
+        file-like object providing a :meth:`read` method. If an
+        `encoding` keyword argument is passed, `data` can also be a
+        :class:`unicode` instance, which will be encoded as `encoding`
+        before being written. Any keyword arguments will be passed
+        through to the created file - see
         :meth:`~gridfs.grid_file.GridIn` for possible
         arguments. Returns the ``"_id"`` of the created file.
 
@@ -99,6 +102,10 @@ class GridFS(object):
         :Parameters:
           - `data`: data to be written as a file.
           - `**kwargs` (optional): keyword arguments for file creation
+
+        .. versionadded:: 1.9
+           The ability to write :class:`unicode`, if an `encoding` has
+           been specified as a keyword argument.
 
         .. versionadded:: 1.6
         """
@@ -122,13 +129,21 @@ class GridFS(object):
         """
         return GridOut(self.__collection, file_id)
 
-    def get_last_version(self, filename):
+    def get_version(self, filename, version=-1):
         """Get a file from GridFS by ``"filename"``.
 
-        Returns the most recently uploaded file in GridFS with the
-        name `filename` as an instance of
-        :class:`~gridfs.grid_file.GridOut`. Raises
-        :class:`~gridfs.errors.NoFile` if no such file exists.
+        Returns a version of the file in GridFS with the name
+        `filename` as an instance of
+        :class:`~gridfs.grid_file.GridOut`. Version ``-1`` will be the
+        most recently uploaded, ``-2`` the second most recently
+        uploaded, etc. Version ``0`` will be the first version
+        uploaded, ``1`` the second version, etc. So if three versions
+        have been uploaded, then version ``0`` is the same as version
+        ``-3``, version ``1`` is the same as version ``-2``, and
+        version ``2`` is the same as version ``-1``.
+
+        Raises :class:`~gridfs.errors.NoFile` if no such version of
+        that file exists.
 
         An index on ``{filename: 1, uploadDate: -1}`` will
         automatically be created when this method is called the first
@@ -136,19 +151,38 @@ class GridFS(object):
 
         :Parameters:
           - `filename`: ``"filename"`` of the file to get
+          - `version` (optional): version of the file to get (defualts
+            to -1, the most recent version uploaded)
 
-        .. versionadded:: 1.6
+        .. versionadded:: 1.9
         """
         self.__files.ensure_index([("filename", ASCENDING),
                                    ("uploadDate", DESCENDING)])
 
         cursor = self.__files.find({"filename": filename})
-        cursor.limit(-1).sort("uploadDate", DESCENDING)
+        if version < 0:
+            skip = abs(version) - 1
+            cursor.limit(-1).skip(skip).sort("uploadDate", DESCENDING)
+        else:
+            cursor.limit(-1).skip(version).sort("uploadDate", ASCENDING)
         try:
             grid_file = cursor.next()
             return GridOut(self.__collection, grid_file["_id"])
         except StopIteration:
-            raise NoFile("no file in gridfs with filename %r" % filename)
+            raise NoFile("no version %d for filename %r" % (version, filename))
+
+    def get_last_version(self, filename):
+        """Get the most recent version of a file in GridFS by ``"filename"``.
+
+        Equivalent to calling :meth:`get_version` with the default
+        `version` (``-1``).
+
+        :Parameters:
+          - `filename`: ``"filename"`` of the file to get
+
+        .. versionadded:: 1.6
+        """
+        return self.get_version(filename)
 
     # TODO add optional safe mode for chunk removal?
     def delete(self, file_id):
@@ -215,8 +249,8 @@ class GridFS(object):
         .. versionadded:: 1.8
         """
         if kwargs:
-            return self.__files.find_one(kwargs) is not None
-        return self.__files.find_one(document_or_id) is not None
+            return self.__files.find_one(kwargs, ["_id"]) is not None
+        return self.__files.find_one(document_or_id, ["_id"]) is not None
 
     def open(self, *args, **kwargs):
         """No longer supported.

@@ -39,7 +39,7 @@ ALL = 2
 """Profile all operations."""
 
 # Remember to change in setup.py as well!
-version = "1.8.1"
+version = "1.9"
 """Current version of PyMongo."""
 
 Connection = PyMongo_Connection
@@ -52,7 +52,7 @@ def has_c():
     .. versionadded:: 1.5
     """
     try:
-        from pymongo import _cbson
+        from pymongo import _cmessage
         return True
     except ImportError:
         return False

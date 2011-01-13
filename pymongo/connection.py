@@ -15,7 +15,9 @@
 """Tools for connecting to MongoDB.
 
 .. seealso:: Module :mod:`~pymongo.master_slave_connection` for
-   connecting to master-slave clusters.
+   connecting to master-slave clusters, and
+   :doc:`/examples/replica_set` for an example of how to connect to a
+   replica set.
 
 To get a :class:`~pymongo.database.Database` instance from a
 :class:`Connection` use either dictionary-style or attribute-style
@@ -33,9 +35,11 @@ access:
 
 import datetime
 import os
+import select
 import socket
 import struct
 import threading
+import time
 import warnings
 
 from pymongo import (database,
@@ -47,8 +51,7 @@ from pymongo.errors import (AutoReconnect,
                             ConnectionFailure,
                             DuplicateKeyError,
                             InvalidURI,
-                            OperationFailure,
-                            TimeoutError)
+                            OperationFailure)
 
 
 _CONNECT_TIMEOUT = 20.0
@@ -112,6 +115,16 @@ def _parse_uri(uri, default_port):
     return (host_list, database, username, password)
 
 
+def _closed(sock):
+    """Return True if we know socket has been closed, False otherwise.
+    """
+    rd, _, _ = select.select([sock], [], [], 0)
+    try:
+        return len(rd) and sock.recv() == ""
+    except:
+        return True
+
+
 class _Pool(threading.local):
     """A simple connection pool.
 
@@ -152,7 +165,7 @@ class _Pool(threading.local):
         if self.sock is not None and self.sock[0] == os.getpid():
             # There's a race condition here, but we deliberately
             # ignore it.  It means that if the pool_size is 10 we
-            # might actually get 8 or 11 or something like that.
+            # might actually keep slightly more than that.
             if len(self.sockets) < self.pool_size:
                 self.sockets.append(self.sock[1])
             else:
@@ -279,6 +292,7 @@ class Connection(object):  # TODO support auth for pooling
         self.__cursor_manager = CursorManager(self)
 
         self.__pool = _Pool(self.__connect)
+        self.__last_checkout = time.time()
 
         self.__network_timeout = network_timeout
         self.__document_class = document_class
@@ -514,6 +528,26 @@ class Connection(object):  # TODO support auth for pooling
             self.disconnect()
             raise AutoReconnect("could not connect to %r" % list(self.__nodes))
 
+    def __socket(self):
+        """Get a socket from the pool.
+
+        If it's been > 1 second since the last time we checked out a
+        socket, we also check to see if the socket has been closed -
+        this let's us avoid seeing *some*
+        :class:`~pymongo.errors.AutoReconnect` exceptions on server
+        hiccups, etc. We only do this if it's been > 1 second since
+        the last socket checkout, to keep performance reasonable - we
+        can't avoid those completely anyway.
+        """
+        sock = self.__pool.socket()
+        t = time.time()
+        if t - self.__last_checkout > 1:
+            if _closed(sock):
+                self.disconnect()
+                sock = self.__pool.socket()
+        self.__last_checkout = t
+        return sock
+
     def disconnect(self):
         """Disconnect from MongoDB.
 
@@ -563,11 +597,7 @@ class Connection(object):  # TODO support auth for pooling
         assert response["number_returned"] == 1
         error = response["data"][0]
 
-        # TODO unify logic with database.command method
-        if not error["ok"]:
-            if error["wtimeout"]:
-                raise TimeoutError(error["errmsg"])
-            raise OperationFailure(error["errmsg"])
+        helpers._check_command_response(error, self.disconnect)
 
         # TODO unify logic with database.error method
         if error.get("err", 0) is None:
@@ -598,7 +628,7 @@ class Connection(object):  # TODO support auth for pooling
           - `with_last_error`: check getLastError status after sending the
             message
         """
-        sock = self.__pool.socket()
+        sock = self.__socket()
         try:
             (request_id, data) = message
             sock.sendall(data)
@@ -650,7 +680,7 @@ class Connection(object):  # TODO support auth for pooling
         sock.sendall(data)
         return self.__receive_message_on_socket(1, request_id, sock)
 
-    # we just ignore _must_use_master here: it's only relavant for
+    # we just ignore _must_use_master here: it's only relevant for
     # MasterSlaveConnection instances.
     def _send_message_with_response(self, message,
                                     _must_use_master=False, **kwargs):
@@ -661,7 +691,7 @@ class Connection(object):  # TODO support auth for pooling
         :Parameters:
           - `message`: (request_id, data) pair making up the message to send
         """
-        sock = self.__pool.socket()
+        sock = self.__socket()
 
         try:
             try:

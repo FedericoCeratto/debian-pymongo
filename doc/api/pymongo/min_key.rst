@@ -1,7 +1,10 @@
-:mod:`min_key` -- Representation for the MongoDB internal MinKey type
-=====================================================================
-.. versionadded:: 1.7
+:mod:`min_key` -- MOVED
+=======================
 
-.. automodule:: pymongo.min_key
-   :synopsis: Representation for the MongoDB internal MinKey type
-   :members:
+.. module:: pymongo.min_key
+
+This module has been deprecated in favor of
+:mod:`bson.min_key`. Please use that module instead.
+
+.. versionchanged:: 1.9
+   Deprecated.
