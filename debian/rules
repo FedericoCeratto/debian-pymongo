@@ -1,5 +1,31 @@
 #!/usr/bin/make -f
+unexport CPPFLAGS
+unexport CFLAGS
+unexport CXXFLAGS
+unexport FFLAGS
+unexport LDFLAGS
+
+export DH_VERBOSE=1
+
+PREFIX = /usr
 
 %:
 	dh  $@
+
+override_dh_auto_build:
+	dh_auto_build
+	sphinx-build -b html doc debian/html
+	rm -rf debian/html/_sources/
+
+override_dh_installdocs:
+	cp doc/changelog.rst changelog
+	dh_installdocs
+	(cd debian/python-pymongo-doc$(PREFIX)/share/doc/python-pymongo-doc/html/_static \
+		&& rm jquery.js \
+		&& ln -s ../../../../javascript/jquery/jquery.js .)
+
+override_dh_auto_clean:
+	rm -rf debian/html changelog
+	find doc -name "*.pyc" -exec rm -rf {} +
+	dh_auto_clean
 

@@ -1,3 +1,9 @@
+pymongo (1.9-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Thu, 13 Jan 2011 15:10:18 +0000
+
 pymongo (1.8.1-1) unstable; urgency=low
 
   * New upstream release.
