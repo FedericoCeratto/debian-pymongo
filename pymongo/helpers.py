@@ -22,11 +22,12 @@ except:  # for Python < 2.5
     _md5func = md5.new
 import struct
 
+import bson
+from bson.son import SON
 import pymongo
-from pymongo import bson
-from pymongo.errors import (OperationFailure,
-                            AutoReconnect)
-from pymongo.son import SON
+from pymongo.errors import (AutoReconnect,
+                            OperationFailure,
+                            TimeoutError)
 
 
 def _index_list(key_or_list, direction=None):
@@ -56,7 +57,7 @@ def _index_document(index_list):
                         "mean %r?" % list(index_list.iteritems()))
     elif not isinstance(index_list, list):
         raise TypeError("must use a list of (key, direction) pairs, "
-                        "not: %r" % index_list)
+                        "not: " + repr(index_list))
     if not len(index_list):
         raise ValueError("key_or_list must not be the empty list")
 
@@ -92,7 +93,7 @@ def _unpack_response(response, cursor_id=None, as_class=dict, tz_aware=False):
         raise OperationFailure("cursor id '%s' not valid at server" %
                                cursor_id)
     elif response_flag & 2:
-        error_object = bson.BSON(response[20:]).to_dict()
+        error_object = bson.BSON(response[20:]).decode()
         if error_object["$err"] == "not master":
             raise AutoReconnect("master has changed")
         raise OperationFailure("database error: %s" %
@@ -102,9 +103,20 @@ def _unpack_response(response, cursor_id=None, as_class=dict, tz_aware=False):
     result["cursor_id"] = struct.unpack("<q", response[4:12])[0]
     result["starting_from"] = struct.unpack("<i", response[12:16])[0]
     result["number_returned"] = struct.unpack("<i", response[16:20])[0]
-    result["data"] = bson._to_dicts(response[20:], as_class, tz_aware)
+    result["data"] = bson.decode_all(response[20:], as_class, tz_aware)
     assert len(result["data"]) == result["number_returned"]
     return result
+
+
+def _check_command_response(response, reset, msg="%s", allowable_errors=[]):
+    if not response["ok"]:
+        if "wtimeout" in response and response["wtimeout"]:
+            raise TimeoutError(msg % response["errmsg"])
+        if not response["errmsg"] in allowable_errors:
+            if response["errmsg"] == "not master":
+                reset()
+                raise AutoReconnect("not master")
+            raise OperationFailure(msg % response["errmsg"])
 
 
 def _password_digest(username, password):

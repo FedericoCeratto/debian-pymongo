@@ -1,6 +1,6 @@
 Metadata-Version: 1.0
 Name: pymongo
-Version: 1.8.1
+Version: 1.9
 Summary: Python driver for MongoDB <http://www.mongodb.org>
 Home-page: http://github.com/mongodb/mongo-python-driver
 Author: Mike Dirolf
@@ -16,8 +16,10 @@ Description: =======
         =====
         
         The PyMongo distribution contains tools for interacting with MongoDB
-        database from Python.  The ``pymongo`` package is a native Python
-        driver for MongoDB. The ``gridfs`` package is a `gridfs
+        database from Python.  The ``bson`` package is an implementation of
+        the `BSON format <http://bsonspec.org>`_ for Python. The ``pymongo``
+        package is a native Python driver for MongoDB. The ``gridfs`` package
+        is a `gridfs
         <http://www.mongodb.org/display/DOCS/GridFS+Specification>`_
         implementation on top of ``pymongo``.
         
@@ -96,7 +98,7 @@ Description: =======
         
         .. _sphinx: http://sphinx.pocoo.org/
         
-Keywords: mongo,mongodb,pymongo,gridfs
+Keywords: mongo,mongodb,pymongo,gridfs,bson
 Platform: UNKNOWN
 Classifier: Development Status :: 5 - Production/Stable
 Classifier: Intended Audience :: Developers

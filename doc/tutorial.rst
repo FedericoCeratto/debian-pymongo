@@ -13,8 +13,8 @@ This tutorial is intended as an introduction to working with
 Prerequisites
 -------------
 Before we start, make sure that you have the **PyMongo** distribution
-:doc:`installed <installation>`. In the Python shell, the following should run without
-raising an exception:
+:doc:`installed <installation>`. In the Python shell, the following
+should run without raising an exception:
 
 .. doctest::
 
@@ -204,7 +204,7 @@ command to the server:
 There are a couple of interesting things to note about this example:
 
   - The call to :meth:`~pymongo.collection.Collection.insert` now
-    returns two :class:`~pymongo.objectid.ObjectId` instances, one for
+    returns two :class:`~bson.objectid.ObjectId` instances, one for
     each inserted document.
   - ``new_posts[1]`` has a different "shape" than the other posts -
     there is no ``"tags"`` field and we've added a new field,
@@ -226,8 +226,8 @@ document in the ``posts`` collection:
   ...   post
   ...
   {u'date': datetime.datetime(...), u'text': u'My first blog post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'mongodb', u'python', u'pymongo']}
-  {u'date': datetime.datetime(2009, 11, 12, 11, 14, tzinfo=...), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
-  {u'date': datetime.datetime(2009, 11, 10, 10, 45, tzinfo=...), u'text': u'and pretty easy too!', u'_id': ObjectId('...'), u'author': u'Eliot', u'title': u'MongoDB is fun'}
+  {u'date': datetime.datetime(2009, 11, 12, 11, 14), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
+  {u'date': datetime.datetime(2009, 11, 10, 10, 45), u'text': u'and pretty easy too!', u'_id': ObjectId('...'), u'author': u'Eliot', u'title': u'MongoDB is fun'}
 
 Just like we did with :meth:`~pymongo.collection.Collection.find_one`,
 we can pass a document to :meth:`~pymongo.collection.Collection.find`
@@ -240,7 +240,7 @@ author is "Mike":
   ...   post
   ...
   {u'date': datetime.datetime(...), u'text': u'My first blog post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'mongodb', u'python', u'pymongo']}
-  {u'date': datetime.datetime(2009, 11, 12, 11, 14, tzinfo=...), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
+  {u'date': datetime.datetime(2009, 11, 12, 11, 14), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
 
 Counting
 --------
@@ -274,8 +274,8 @@ than a certain date, but also sort the results by author:
   >>> for post in posts.find({"date": {"$lt": d}}).sort("author"):
   ...   post
   ...
-  {u'date': datetime.datetime(2009, 11, 10, 10, 45, tzinfo=...), u'text': u'and pretty easy too!', u'_id': ObjectId('...'), u'author': u'Eliot', u'title': u'MongoDB is fun'}
-  {u'date': datetime.datetime(2009, 11, 12, 11, 14, tzinfo=...), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
+  {u'date': datetime.datetime(2009, 11, 10, 10, 45), u'text': u'and pretty easy too!', u'_id': ObjectId('...'), u'author': u'Eliot', u'title': u'MongoDB is fun'}
+  {u'date': datetime.datetime(2009, 11, 12, 11, 14), u'text': u'Another post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'bulk', u'insert']}
 
 Here we use the special ``"$lt"`` operator to do a range query, and
 also call :meth:`~pymongo.cursor.Cursor.sort` to sort the results

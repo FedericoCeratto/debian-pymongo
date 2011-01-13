@@ -16,14 +16,14 @@
 
 import warnings
 
+from bson.code import Code
+from bson.dbref import DBRef
+from bson.son import SON
 from pymongo import helpers
-from pymongo.code import Code
 from pymongo.collection import Collection
-from pymongo.dbref import DBRef
 from pymongo.errors import (CollectionInvalid,
                             InvalidName,
                             OperationFailure)
-from pymongo.son import SON
 from pymongo.son_manipulator import ObjectIdInjector
 
 
@@ -256,7 +256,7 @@ class Database(object):
             .. note:: the order of keys in the `command` document is
                significant (the "verb" must come first), so commands
                which require multiple keys (e.g. `findandmodify`)
-               should use an instance of :class:`~pymongo.son.SON` or
+               should use an instance of :class:`~bson.son.SON` or
                a string and kwargs instead of a Python `dict`.
 
           - `value` (optional): value to use for the command verb when
@@ -287,11 +287,11 @@ class Database(object):
                                        _must_use_master=True,
                                        _is_command=True)
 
-        if check and not result["ok"]:
-            if result["errmsg"] in allowable_errors:
-                return result
-            raise OperationFailure("command %r failed: %s" %
-                                   (command, result["errmsg"]))
+        if check:
+            msg = "command %r failed: %%s" % command
+            helpers._check_command_response(result, self.connection.disconnect,
+                                            msg, allowable_errors)
+
         return result
 
     def collection_names(self):
@@ -524,12 +524,14 @@ class Database(object):
         self.command("logout")
 
     def dereference(self, dbref):
-        """Dereference a DBRef, getting the SON object it points to.
+        """Dereference a :class:`~bson.dbref.DBRef`, getting the
+        document it points to.
 
-        Raises TypeError if `dbref` is not an instance of DBRef. Returns a SON
-        object or None if the reference does not point to a valid object.
-        Raises ValueError if `dbref` has a database specified that is different
-        from the current database.
+        Raises :class:`TypeError` if `dbref` is not an instance of
+        :class:`~bson.dbref.DBRef`. Returns a document, or ``None`` if
+        the reference does not point to a valid document.  Raises
+        :class:`ValueError` if `dbref` has a database specified that
+        is different from the current database.
 
         :Parameters:
           - `dbref`: the reference
@@ -543,22 +545,24 @@ class Database(object):
         return self[dbref.collection].find_one({"_id": dbref.id})
 
     def eval(self, code, *args):
-        """Evaluate a JavaScript expression on the Mongo server.
+        """Evaluate a JavaScript expression in MongoDB.
 
-        Useful if you need to touch a lot of data lightly; in such a scenario
-        the network transfer of the data could be a bottleneck. The `code`
-        argument must be a JavaScript function. Additional positional
-        arguments will be passed to that function when it is run on the
-        server.
+        Useful if you need to touch a lot of data lightly; in such a
+        scenario the network transfer of the data could be a
+        bottleneck. The `code` argument must be a JavaScript
+        function. Additional positional arguments will be passed to
+        that function when it is run on the server.
 
-        Raises TypeError if `code` is not an instance of (str, unicode,
-        `Code`). Raises OperationFailure if the eval fails. Returns the result
-        of the evaluation.
+        Raises :class:`TypeError` if `code` is not an instance of
+        (str, unicode, `Code`). Raises
+        :class:`~pymongo.errors.OperationFailure` if the eval
+        fails. Returns the result of the evaluation.
 
         :Parameters:
-          - `code`: string representation of JavaScript code to be evaluated
-          - `args` (optional): additional positional arguments are passed to
-            the `code` being evaluated
+          - `code`: string representation of JavaScript code to be
+            evaluated
+          - `args` (optional): additional positional arguments are
+            passed to the `code` being evaluated
         """
         if not isinstance(code, Code):
             code = Code(code)
@@ -604,17 +608,21 @@ class SystemJS(object):
         .. versionadded:: 1.5
         """
         # can't just assign it since we've overridden __setattr__
-        object.__setattr__(self, "_database", database)
+        object.__setattr__(self, "_db", database)
 
     def __setattr__(self, name, code):
-        self._database.system.js.save({"_id": name, "value": Code(code)},
-                                       safe=True)
+        self._db.system.js.save({"_id": name, "value": Code(code)}, safe=True)
 
     def __delattr__(self, name):
-        self._database.system.js.remove({"_id": name}, safe=True)
+        self._db.system.js.remove({"_id": name}, safe=True)
 
     def __getattr__(self, name):
-        return lambda *args: self._database.eval("function() { return %s."
-                                                 "apply(this, "
-                                                 "arguments); }" % name,
-                                                 *args)
+        return lambda *args: self._db.eval("function() { return %s.apply(this,"
+                                           "arguments); }" % name, *args)
+
+    def list(self):
+        """Get a list of the names of the functions stored in this database.
+
+        .. versionadded:: 1.9
+        """
+        return [x["_id"] for x in self._db.system.js.find(fields=["_id"])]

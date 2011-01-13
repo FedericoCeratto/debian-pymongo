@@ -1,16 +1,10 @@
-:mod:`binary` -- Tools for representing binary data to be stored in MongoDB
-===========================================================================
+:mod:`binary` -- MOVED
+======================
 
-.. automodule:: pymongo.binary
-   :synopsis: Tools for representing binary data to be stored in MongoDB
+.. module:: pymongo.binary
 
-   .. autodata:: BINARY_SUBTYPE
-   .. autodata:: FUNCTION_SUBTYPE
-   .. autodata:: OLD_BINARY_SUBTYPE
-   .. autodata:: UUID_SUBTYPE
-   .. autodata:: MD5_SUBTYPE
-   .. autodata:: USER_DEFINED_SUBTYPE
+This module has been deprecated in favor of :mod:`bson.binary`. Please
+use that module instead.
 
-   .. autoclass:: Binary(data[, subtype=BINARY_SUBTYPE])
-      :members:
-      :show-inheritance:
+.. versionchanged:: 1.9
+   Deprecated.

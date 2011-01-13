@@ -14,12 +14,12 @@
 
 """Cursor class to iterate over Mongo query results."""
 
+from bson.code import Code
+from bson.son import SON
 from pymongo import (helpers,
                      message)
-from pymongo.code import Code
 from pymongo.errors import (InvalidOperation,
                             AutoReconnect)
-from pymongo.son import SON
 
 _QUERY_OPTIONS = {
     "tailable_cursor": 2,
@@ -79,6 +79,16 @@ class Cursor(object):
         self.__fields = fields
         self.__skip = skip
         self.__limit = limit
+        self.__batch_size = 0
+
+        # This is ugly. People want to be able to do cursor[5:5] and
+        # get an empty result set (old behavior was an
+        # exception). It's hard to do that right, though, because the
+        # server uses limit(0) to mean 'no limit'. So we set __empty
+        # in that case and check for it when iterating. We also unset
+        # it anytime we change __limit.
+        self.__empty = False
+
         self.__timeout = timeout
         self.__tailable = tailable
         self.__snapshot = snapshot
@@ -144,6 +154,7 @@ class Cursor(object):
         copy.__ordering = self.__ordering
         copy.__explain = self.__explain
         copy.__hint = self.__hint
+        copy.__batch_size = self.__batch_size
         return copy
 
     def __die(self):
@@ -210,7 +221,32 @@ class Cursor(object):
             raise TypeError("limit must be an int")
         self.__check_okay_to_chain()
 
+        self.__empty = False
         self.__limit = limit
+        return self
+
+    def batch_size(self, batch_size):
+        """Set the size for batches of results returned by this cursor.
+
+        Raises :class:`TypeError` if `batch_size` is not an instance
+        of :class:`int`. Raises :class:`ValueError` if `batch_size` is
+        less than ``0``. Raises
+        :class:`~pymongo.errors.InvalidOperation` if this
+        :class:`Cursor` has already been used. The last `batch_size`
+        applied to this cursor takes precedence.
+
+        :Parameters:
+          - `batch_size`: The size of each batch of results requested.
+
+        .. versionadded:: 1.9
+        """
+        if not isinstance(batch_size, int):
+            raise TypeError("batch_size must be an int")
+        if batch_size < 0:
+            raise ValueError("batch_size must be >= 0")
+        self.__check_okay_to_chain()
+
+        self.__batch_size = batch_size == 1 and 2 or batch_size
         return self
 
     def skip(self, skip):
@@ -260,6 +296,7 @@ class Cursor(object):
           - `index`: An integer or slice index to be applied to this cursor
         """
         self.__check_okay_to_chain()
+        self.__empty = False
         if isinstance(index, slice):
             if index.step is not None:
                 raise IndexError("Cursor instances do not support slice steps")
@@ -273,9 +310,11 @@ class Cursor(object):
 
             if index.stop is not None:
                 limit = index.stop - skip
-                if limit <= 0:
+                if limit < 0:
                     raise IndexError("stop index must be greater than start"
                                      "index for slice %r" % index)
+                if limit == 0:
+                    self.__empty = True
             else:
                 limit = 0
 
@@ -446,7 +485,7 @@ class Cursor(object):
         """Adds a $where clause to this query.
 
         The `code` argument must be an instance of :class:`basestring`
-        or :class:`~pymongo.code.Code` containing a JavaScript
+        or :class:`~bson.code.Code` containing a JavaScript
         expression. This expression will be evaluated for each
         document scanned. Only those documents for which the
         expression evaluates to *true* will be returned as
@@ -517,8 +556,7 @@ class Cursor(object):
         if len(self.__data) or self.__killed:
             return len(self.__data)
 
-        if self.__id is None:
-            # Query
+        if self.__id is None:  # Query
             self.__send_message(
                 message.query(self.__query_options(),
                               self.__collection.full_name,
@@ -526,15 +564,13 @@ class Cursor(object):
                               self.__query_spec(), self.__fields))
             if not self.__id:
                 self.__killed = True
-        elif self.__id:
-            # Get More
-            limit = 0
+        elif self.__id:  # Get More
             if self.__limit:
-                if self.__limit > self.__retrieved:
-                    limit = self.__limit - self.__retrieved
-                else:
-                    self.__killed = True
-                    return 0
+                limit = self.__limit - self.__retrieved
+                if self.__batch_size:
+                    limit = min(limit, self.__batch_size)
+            else:
+                limit = self.__batch_size
 
             self.__send_message(
                 message.get_more(self.__collection.full_name,
@@ -559,6 +595,8 @@ class Cursor(object):
         return self
 
     def next(self):
+        if self.__empty:
+            raise StopIteration
         db = self.__collection.database
         if len(self.__data) or self._refresh():
             next = db._fix_outgoing(self.__data.pop(0), self.__collection)
