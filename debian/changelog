@@ -1,8 +1,15 @@
 pymongo (1.9-1) UNRELEASED; urgency=low
 
-  * New upstream release.
+  [ Federico Ceratto ]
+  * New upstream release (Closes: #618271).
 
- -- Federico Ceratto <federico.ceratto@gmail.com>  Thu, 13 Jan 2011 15:10:18 +0000
+  [ Janos Guljas ]
+  * Fix debian/python-pymongo.install (Closes: #597085).
+  * Switch to dh_python2.
+  * Add binary package python-pymongo-doc.
+  * Add binary package python-bson.
+
+ -- Janos Guljas <janos@resenje.org>  Mon, 14 Mar 2011 00:53:18 +0100
 
 pymongo (1.8.1-1) unstable; urgency=low
 
