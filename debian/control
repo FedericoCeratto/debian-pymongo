@@ -2,22 +2,21 @@ Source: pymongo
 Section: python
 Priority: optional
 Maintainer: Federico Ceratto <federico.ceratto@gmail.com>
+DM-Upload-Allowed: yes
 Build-Depends: debhelper (>= 8.0.0~),
  python-all-dev,
  python-setuptools (>= 0.6.14),
  python-sphinx
 Standards-Version: 3.9.1
-XS-Python-Version: >= 2.5
 Homepage: http://api.mongodb.org/python/
 Vcs-Git: git://git.debian.org/git/collab-maint/pymongo.git
 Vcs-Browser: http://git.debian.org/?p=collab-maint/pymongo.git
 
 Package: python-pymongo
 Architecture: any
-Depends: python-bson (>= ${source:Version}), ${shlibs:Depends}, ${python:Depends}, ${misc:Depends}
+Depends: python-bson (= ${binary:Version}), ${shlibs:Depends}, ${python:Depends}, ${misc:Depends}
 Recommends: python-gridfs (>= ${source:Version})
 Provides: ${python:Provides}
-XB-Python-Version: ${python:Versions}
 Description: Python interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
  document-oriented data store. Pymongo provides an interface
@@ -38,7 +37,6 @@ Package: python-gridfs
 Architecture: all
 Depends: ${python:Depends}, ${misc:Depends}
 Provides: ${python:Provides}
-XB-Python-Version: ${python:Versions}
 Description: Python implementation of GridFS for MongoDB
  GridFS is a storage specification for large objects in MongoDB.
  The Python gridfs module is an implementation based
@@ -48,7 +46,6 @@ Package: python-bson
 Architecture: any
 Depends: ${python:Depends}, ${misc:Depends}, ${shlibs:Depends}
 Provides: ${python:Provides}
-XB-Python-Version: ${python:Versions}
 Description: Python implementation of BSON for MongoDB
  BSON Python module contains all of the Binary JSON encoding and decoding
  logic for MongoDB.
