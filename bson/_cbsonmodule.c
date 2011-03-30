@@ -91,6 +91,9 @@ static PyTypeObject* REType = NULL;
 static PyObject* elements_to_dict(const char* string, int max,
                                   PyObject* as_class, unsigned char tz_aware);
 
+static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* value,
+                                    unsigned char check_keys, unsigned char first_attempt);
+
 /* Date stuff */
 static PyObject* datetime_from_millis(long long millis) {
     int microseconds = (millis % 1000) * 1000;
@@ -207,12 +210,25 @@ static int _reload_python_objects(void) {
     return 0;
 }
 
+static int write_element_to_buffer(buffer_t buffer, int type_byte,
+                                   PyObject* value, unsigned char check_keys,
+                                   unsigned char first_attempt) {
+    int result;
+    if(Py_EnterRecursiveCall(" while encoding an object to BSON "))
+        return 0;
+    result = _write_element_to_buffer(buffer, type_byte, value,
+                                      check_keys, first_attempt);
+    Py_LeaveRecursiveCall();
+    return result;
+}
+
 /* TODO our platform better be little-endian w/ 4-byte ints! */
 /* Write a single value to the buffer (also write it's type_byte, for which
  * space has already been reserved.
  *
  * returns 0 on failure */
-static int write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* value, unsigned char check_keys, unsigned char first_attempt) {
+static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* value,
+                                    unsigned char check_keys, unsigned char first_attempt) {
     if (PyBool_Check(value)) {
         const long bool = PyInt_AsLong(value);
         const char c = bool ? 0x01 : 0x00;
@@ -647,7 +663,8 @@ static int check_key_name(const char* name,
 /* Write a (key, value) pair to the buffer.
  *
  * Returns 0 on failure */
-int write_pair(buffer_t buffer, const char* name, Py_ssize_t name_length, PyObject* value, unsigned char check_keys, unsigned char allow_id) {
+int write_pair(buffer_t buffer, const char* name, Py_ssize_t name_length,
+               PyObject* value, unsigned char check_keys, unsigned char allow_id) {
     int type_byte;
 
     /* Don't write any _id elements unless we're explicitly told to -
@@ -778,6 +795,12 @@ int write_dict(buffer_t buffer, PyObject* dict, unsigned char check_keys, unsign
     }
     while ((key = PyIter_Next(iter)) != NULL) {
         PyObject* value = PyDict_GetItem(dict, key);
+        if (!value) {
+            PyErr_SetObject(PyExc_KeyError, key);
+            Py_DECREF(key);
+            Py_DECREF(iter);
+            return 0;
+        }
         if (!decode_and_write_pair(buffer, key, value, check_keys, top_level)) {
             Py_DECREF(key);
             Py_DECREF(iter);
@@ -792,13 +815,6 @@ int write_dict(buffer_t buffer, PyObject* dict, unsigned char check_keys, unsign
         return 0;
     }
     length = buffer_get_position(buffer) - length_location;
-    if (length > 4 * 1024 * 1024) {
-        PyObject* InvalidDocument = _error("InvalidDocument");
-        PyErr_SetString(InvalidDocument, "document too large - "
-                        "BSON documents are limited to 4 MB");
-        Py_DECREF(InvalidDocument);
-        return 0;
-    }
     memcpy(buffer_get_buffer(buffer) + length_location, &length, 4);
     return 1;
 }
