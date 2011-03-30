@@ -21,7 +21,7 @@ from bson.son import SON
 from pymongo import (helpers,
                      message)
 from pymongo.cursor import Cursor
-from pymongo.errors import InvalidName
+from pymongo.errors import InvalidName, InvalidOperation
 
 _ZERO = "\x00\x00\x00\x00"
 
@@ -88,7 +88,7 @@ class Collection(object):
             raise InvalidName("collection names must not "
                               "contain '$': %r" % name)
         if name[0] == "." or name[-1] == ".":
-            raise InvalidName("collecion names must not start "
+            raise InvalidName("collection names must not start "
                               "or end with '.': %r" % name)
         if "\x00" in name:
             raise InvalidName("collection names must not contain the "
@@ -634,11 +634,13 @@ class Collection(object):
 
         index.update(kwargs)
 
+        self.__database.system.indexes.insert(index, manipulate=False,
+                                              check_keys=False,
+                                              safe=True)
+
         self.__database.connection._cache_index(self.__database.name,
                                                 self.__name, name, ttl)
 
-        self.__database.system.indexes.insert(index, manipulate=False,
-                                              check_keys=False)
         return name
 
     def ensure_index(self, key_or_list, deprecated_unique=None,
@@ -677,6 +679,8 @@ class Collection(object):
           - `unique`: should this index guarantee uniqueness?
           - `dropDups` or `drop_dups`: should we drop duplicates
             during index creation when creating a unique index?
+          - `background`: if this index should be created in the
+            background
           - `min`: minimum value for keys in a :data:`~pymongo.GEO2D`
             index
           - `max`: maximum value for keys in a :data:`~pymongo.GEO2D`
@@ -910,7 +914,8 @@ class Collection(object):
         """
         return self.find().distinct(key)
 
-    def map_reduce(self, map, reduce, full_response=False, **kwargs):
+    def map_reduce(self, map, reduce, out, merge_output=False,
+                   reduce_output=False, full_response=False, **kwargs):
         """Perform a map/reduce operation on this collection.
 
         If `full_response` is ``False`` (default) returns a
@@ -921,13 +926,22 @@ class Collection(object):
         :Parameters:
           - `map`: map function (as a JavaScript string)
           - `reduce`: reduce function (as a JavaScript string)
+          - `out` (required): output collection name
+          - `merge_output` (optional): Merge output into `out`. If the same
+            key exists in both the result set and the existing output collection,
+            the new key will overwrite the existing key
+          - `reduce_output` (optional): If documents exist for a given key
+            in the result set and in the existing output collection, then a
+            reduce operation (using the specified reduce function) will be
+            performed on the two values and the result will be written to
+            the output collection
           - `full_response` (optional): if ``True``, return full response to
             this command - otherwise just return the result collection
           - `**kwargs` (optional): additional arguments to the
             `map reduce command`_ may be passed as keyword arguments to this
             helper method, e.g.::
 
-            >>> db.test.map_reduce(map, reduce, limit=2)
+            >>> db.test.map_reduce(map, reduce, "myresults", limit=2)
 
         .. note:: Requires server version **>= 1.1.1**
 
@@ -939,11 +953,121 @@ class Collection(object):
 
         .. mongodoc:: mapreduce
         """
+        if not isinstance(out, basestring):
+            raise TypeError("'out' must be an instance of basestring")
+
+        if merge_output and reduce_output:
+            raise InvalidOperation("Can't do both merge and re-reduce of output.")
+
+        if merge_output:
+            out_conf = {"merge": out}
+        elif reduce_output:
+            out_conf = {"reduce": out}
+        else:
+            out_conf = out
+
         response = self.__database.command("mapreduce", self.__name,
-                                           map=map, reduce=reduce, **kwargs)
+                                           map=map, reduce=reduce,
+                                           out=out_conf, **kwargs)
         if full_response:
             return response
-        return self.__database[response["result"]]
+        else:
+            return self.__database[response["result"]]
+
+    def inline_map_reduce(self, map, reduce, full_response=False, **kwargs):
+        """Perform an inline map/reduce operation on this collection.
+
+        Perform the map/reduce operation on the server in RAM. A result
+        collection is not created. The result set is returned as a list
+        of documents.
+
+        If `full_response` is ``False`` (default) returns the
+        result documents in a list. Otherwise, returns the full
+        response from the server to the `map reduce command`_.
+
+        :Parameters:
+          - `map`: map function (as a JavaScript string)
+          - `reduce`: reduce function (as a JavaScript string)
+          - `full_response` (optional): if ``True``, return full response to
+            this command - otherwise just return the result collection
+          - `**kwargs` (optional): additional arguments to the
+            `map reduce command`_ may be passed as keyword arguments to this
+            helper method, e.g.::
+
+            >>> db.test.inline_map_reduce(map, reduce, limit=2)
+
+        .. note:: Requires server version **>= 1.7.4**
+
+        .. versionadded:: 1.10
+        """
+
+        response = self.__database.command("mapreduce", self.__name,
+                                           map=map, reduce=reduce,
+                                           out={"inline": 1}, **kwargs)
+
+        if full_response:
+            return response
+        else:
+            return response.get("results")
+
+    def find_and_modify(self, query={}, update=None, upsert=False, **kwargs):
+        """Update and return an object.
+
+        This is a thin wrapper around the findAndModify_ command. The
+        positional arguments are designed to match the first three arguments
+        to :meth:`update` however most options should be passed as named
+        parameters. Either `update` or `remove` arguments are required, all
+        others are optional.
+
+        Returns either the object before or after modification based on `new`
+        parameter. If no objects match the `query` and `upsert` is false,
+        returns ``None``. If upserting and `new` is false, returns ``{}``.
+
+        :Parameters:
+            - `query`: filter for the update (default ``{}``)
+            - `sort`: priority if multiple objects match (default ``{}``)
+            - `update`: see second argument to :meth:`update` (no default)
+            - `remove`: remove rather than updating (default ``False``)
+            - `new`: return updated rather than original object
+              (default ``False``)
+            - `fields`: see second argument to :meth:`find` (default all)
+            - `upsert`: insert if object doesn't exist (default ``False``)
+            - `**kwargs`: any other options the findAndModify_ command
+              supports can be passed here.
+
+
+        .. mongodoc:: findAndModify
+
+        .. _findAndModify: http://dochub.mongodb.org/core/findAndModify
+
+        .. note:: Requires server version **>= 1.3.0**
+
+        .. versionadded:: 1.10
+        """
+        if (not update and not kwargs.get('remove', None)):
+            raise ValueError("Must either update or remove")
+
+        if (update and kwargs.get('remove', None)):
+            raise ValueError("Can't do both update and remove")
+
+        # No need to include empty args
+        if query: kwargs['query'] = query
+        if update: kwargs['update'] = update
+        if upsert: kwargs['upsert'] = upsert
+
+        no_obj_error = "No matching object found"
+
+        out = self.__database.command("findAndModify", self.__name,
+                allowable_errors=[no_obj_error], **kwargs)
+
+        if not out['ok']:
+            if out["errmsg"] == no_obj_error:
+                return None
+            else:
+                # Should never get here b/c of allowable_errors
+                raise ValueError("Unexpected Error: %s"%out)
+
+        return out.get('value')
 
     def __iter__(self):
         return self

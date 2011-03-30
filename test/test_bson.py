@@ -208,6 +208,12 @@ class TestBSON(unittest.TestCase):
     def test_bad_encode(self):
         self.assertRaises(InvalidStringData, BSON.encode,
                           {"lalala": '\xf4\xe0\xf0\xe1\xc0 Color Touch'})
+        evil_list = {'a' : []}
+        evil_list['a'].append(evil_list)
+        evil_dict = {}
+        evil_dict['a'] = evil_dict
+        for evil_data in [evil_dict, evil_list]:
+            self.assertRaises(RuntimeError, BSON.encode, evil_data)
 
     def test_overflow(self):
         self.assert_(BSON.encode({"x": 9223372036854775807L}))
@@ -239,9 +245,6 @@ class TestBSON(unittest.TestCase):
 
     def test_non_string_keys(self):
         self.assertRaises(InvalidDocument, BSON.encode, {8.9: "test"})
-
-    def test_large_document(self):
-        self.assertRaises(InvalidDocument, BSON.encode, {"key": "x"*4*1024*1024})
 
     def test_utf8(self):
         w = {u"aéあ": u"aéあ"}

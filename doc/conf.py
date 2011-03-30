@@ -5,7 +5,7 @@
 # This file is execfile()d with the current directory set to its containing dir.
 
 import sys, os
-sys.path.append(os.path.abspath('..'))
+sys.path[0:0] = [os.path.abspath('..')]
 
 import pymongo
 
@@ -27,7 +27,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'PyMongo'
-copyright = u'2009, Michael Dirolf'
+copyright = u'2008 - 2011, 10gen, Inc.'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the

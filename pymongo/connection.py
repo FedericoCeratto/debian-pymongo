@@ -50,6 +50,7 @@ from pymongo.errors import (AutoReconnect,
                             ConfigurationError,
                             ConnectionFailure,
                             DuplicateKeyError,
+                            InvalidDocument,
                             InvalidURI,
                             OperationFailure)
 
@@ -81,20 +82,28 @@ def _str_to_node(string, default_port=27017):
     return (host, port)
 
 
-def _parse_uri(uri, default_port):
+def _parse_uri(uri, default_port=27017):
     """MongoDB URI parser.
     """
-    info = {}
 
     if uri.startswith("mongodb://"):
         uri = uri[len("mongodb://"):]
     elif "://" in uri:
         raise InvalidURI("Invalid uri scheme: %s" % _partition(uri, "://")[0])
 
-    (hosts, database) = _partition(uri, "/")
+    (hosts, namespace) = _partition(uri, "/")
 
-    if not database:
-        database = None
+    raw_options = None
+    if namespace:
+        (namespace, raw_options) = _partition(namespace, "?")
+        if namespace.find(".") < 0:
+            db = namespace
+            collection = None
+        else:
+            (db, collection) = namespace.split(".", 1)
+    else:
+        db = None
+        collection = None
 
     username = None
     password = None
@@ -112,7 +121,21 @@ def _parse_uri(uri, default_port):
             raise InvalidURI("empty host (or extra comma in host list)")
         host_list.append(_str_to_node(host, default_port))
 
-    return (host_list, database, username, password)
+    options = {}
+    if raw_options:
+        and_idx = raw_options.find("&")
+        semi_idx = raw_options.find(";")
+        if and_idx >= 0 and semi_idx >= 0:
+            raise InvalidURI("Cannot mix & and ; for option separators.")
+        elif and_idx >= 0:
+            options = dict([kv.split("=") for kv in raw_options.split("&")])
+        elif semi_idx >= 0:
+            options = dict([kv.split("=") for kv in raw_options.split(";")])
+        elif raw_options.find("="):
+            options = dict([raw_options.split("=")])
+
+
+    return (host_list, db, username, password, collection, options)
 
 
 def _closed(sock):
@@ -135,21 +158,29 @@ class _Pool(threading.local):
     """
 
     # Non thread-locals
-    __slots__ = ["sockets", "socket_factory", "pool_size"]
+    __slots__ = ["sockets", "socket_factory", "pool_size", "pid"]
+
+    # thread-local default
     sock = None
 
     def __init__(self, socket_factory):
+        self.pid = os.getpid()
         self.pool_size = 10
         self.socket_factory = socket_factory
         if not hasattr(self, "sockets"):
             self.sockets = []
 
+
     def socket(self):
-        # we store the pid here to avoid issues with fork /
-        # multiprocessing - see
-        # test.test_connection:TestConnection.test_fork for an example
-        # of what could go wrong otherwise
+        # We use the pid here to avoid issues with fork / multiprocessing.
+        # See test.test_connection:TestConnection.test_fork for an example of
+        # what could go wrong otherwise
         pid = os.getpid()
+
+        if pid != self.pid:
+            self.sock = None
+            self.sockets = []
+            self.pid = pid
 
         if self.sock is not None and self.sock[0] == pid:
             return self.sock[1]
@@ -179,6 +210,8 @@ class Connection(object):  # TODO support auth for pooling
 
     HOST = "localhost"
     PORT = 27017
+
+    __max_bson_size = 4 * 1024 * 1024
 
     def __init__(self, host=None, port=None, pool_size=None,
                  auto_start_request=None, timeout=None, slave_okay=False,
@@ -258,12 +291,16 @@ class Connection(object):  # TODO support auth for pooling
         database = None
         username = None
         password = None
+        collection = None
+        options = {}
         for uri in host:
-            (n, db, u, p) = _parse_uri(uri, port)
+            (n, db, u, p, coll, opts) = _parse_uri(uri, port)
             nodes.update(n)
             database = db or database
             username = u or username
             password = p or password
+            collection = coll or collection
+            options = opts or options
         if not nodes:
             raise ConfigurationError("need to specify at least one host")
         self.__nodes = nodes
@@ -284,10 +321,22 @@ class Connection(object):  # TODO support auth for pooling
         self.__host = None
         self.__port = None
 
-        self.__slave_okay = slave_okay
+        for k in options.iterkeys():
+            # PYTHON-205 - Lets not break existing client code.
+            if k in ("slaveOk", "slaveok"):
+                self.__slave_okay = (options[k][0].upper() == 'T')
+                break
+        else:
+            self.__slave_okay = slave_okay
+
         if slave_okay and len(self.__nodes) > 1:
             raise ConfigurationError("cannot specify slave_okay for a paired "
                                      "or replica set connection")
+
+        # TODO - Support using other options like w and fsync from URI
+        self.__options = options
+        # TODO - Support setting the collection from URI as the Java driver does
+        self.__collection = collection
 
         self.__cursor_manager = CursorManager(self)
 
@@ -450,6 +499,15 @@ class Connection(object):  # TODO support auth for pooling
         """
         return self.__tz_aware
 
+    @property
+    def max_bson_size(self):
+        """Return the maximum size BSON object the connected server
+        accepts in bytes. Defaults to 4MB in server < 1.7.4.
+
+        .. versionadded:: 1.10
+        """
+        return self.__max_bson_size
+
     def __add_hosts_and_get_primary(self, response):
         if "hosts" in response:
             self.__nodes.update([_str_to_node(h) for h in response["hosts"]])
@@ -463,6 +521,17 @@ class Connection(object):  # TODO support auth for pooling
         try:
             response = self.admin.command("ismaster")
             self.end_request()
+
+            if "maxBsonObjectSize" in response:
+                self.__max_bson_size = response["maxBsonObjectSize"]
+
+            # If __slave_okay is True and we've only been given one node
+            # assume this should be a direct connection and don't try to
+            # discover other nodes.
+            if len(self.__nodes) == 1 and self.__slave_okay:
+                if response["ismaster"]:
+                    return True
+                return False
 
             primary = self.__add_hosts_and_get_primary(response)
             if response["ismaster"]:
@@ -607,12 +676,33 @@ class Connection(object):  # TODO support auth for pooling
             raise AutoReconnect("not master")
 
         if "code" in error:
-            if error["code"] in [11000, 11001]:
+            if error["code"] in [11000, 11001, 12582]:
                 raise DuplicateKeyError(error["err"])
             else:
                 raise OperationFailure(error["err"], error["code"])
         else:
             raise OperationFailure(error["err"])
+
+    def __check_bson_size(self, message):
+        """Make sure the message doesn't include BSON documents larger
+        than the connected server will accept.
+
+        :Parameters:
+          - `message`: message to check
+        """
+        if len(message) == 3:
+            (request_id, data, max_doc_size) = message
+            if max_doc_size > self.__max_bson_size:
+                raise InvalidDocument("BSON document too large (%d bytes)"
+                                      " - the connected server supports"
+                                      " BSON document sizes up to %d"
+                                      " bytes." %
+                                      (max_doc_size, self.__max_bson_size))
+            return (request_id, data)
+        else:
+            # get_more and kill_cursors messages
+            # don't include BSON documents.
+            return message
 
     def _send_message(self, message, with_last_error=False):
         """Say something to Mongo.
@@ -630,7 +720,7 @@ class Connection(object):  # TODO support auth for pooling
         """
         sock = self.__socket()
         try:
-            (request_id, data) = message
+            (request_id, data) = self.__check_bson_size(message)
             sock.sendall(data)
             # Safe mode. We pack the message together with a lastError
             # message and send both. We then get the response (to the
@@ -676,7 +766,7 @@ class Connection(object):  # TODO support auth for pooling
     def __send_and_receive(self, message, sock):
         """Send a message on the given socket and return the response data.
         """
-        (request_id, data) = message
+        (request_id, data) = self.__check_bson_size(message)
         sock.sendall(data)
         return self.__receive_message_on_socket(1, request_id, sock)
 

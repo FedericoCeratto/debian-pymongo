@@ -26,7 +26,7 @@ layers, the time spent working directly with the driver will have
 increased your understanding of how MongoDB actually works.
 
 MongoKit
-  The `MongoKit <http://bitbucket.org/namlook/mongokit/>`_ framework
+  The `MongoKit <http://github.com/namlook/mongokit>`_ framework
   is an ORM-like layer on top of PyMongo. There is also a MongoKit
   `google group <http://groups.google.com/group/mongokit>`_.
 
@@ -39,6 +39,12 @@ Ming
   <http://blog.pythonisito.com/2009/12/ming-01-released-python-library-for.html>`_
   for more details.
 
+MongoAlchemy
+  `MongoAlchemy <http://mongoalchemy.org>`_ is another ORM-like layer on top of
+  PyMongo. Its API is inspired by `SQLAlchemy <http://sqlalchemy.org>`_. The
+  code is available on `github <http://github.com/jeffjenkins/MongoAlchemy>`_;
+  for more information, see the `tutorial <http://mongoalchemy.org/tutorial.html>`_.
+
 MongoEngine
   `MongoEngine <http://hmarr.com/mongoengine/>`_ is another ORM-like
   layer on top of PyMongo. It allows you to define schemas for
@@ -47,9 +53,9 @@ MongoEngine
   <http://github.com/hmarr/mongoengine>`_; for more information, see
   the `tutorial <http://hmarr.com/mongoengine/tutorial.html>`_.
 
-DjangoMongodbEngine
+django-mongodb-engine
   `Django MongoDB Engine
-  <http://github.com/FlaPer87/django-mongodb-engine/>`_ is a mongodb
+  <http://github.com/django-mongodb-engine/mongodb-engine/>`_ is a MongoDB
   database backend for Django.
 
 pymongo-bongo
@@ -62,7 +68,6 @@ Smaller or less well-maintained projects (in order from most to least
 recently committed to at the time of the last update to this list):
 
   - `mongodb-object <http://github.com/marcboeker/mongodb-object>`_
-  - `mongo-mapper <http://github.com/jeffjenkins/mongo-mapper/tree/master>`_
   - `MongoMagic <http://bitbucket.org/bottiger/mongomagic/wiki/Home>`_
   - `django-mongodb <http://bitbucket.org/kpot/django-mongodb/>`_
 
@@ -79,8 +84,8 @@ mongodb_beaker
   `mongodb_beaker <http://pypi.python.org/pypi/mongodb_beaker>`_ is a
   project to enable using MongoDB as a backend for `beaker's
   <http://beaker.groovie.org/>`_ caching / session system. The
-  `source is on bitbucket
-  <http://bitbucket.org/bwmcadams/mongodb_beaker/>`_.
+  `source is on github
+  <http://github.com/bwmcadams/mongodb_beaker>`_.
 
 MongoLog
   `MongoLog <http://github.com/andreisavu/mongodb-log/>`_
