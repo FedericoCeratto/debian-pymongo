@@ -1,8 +1,12 @@
 pymongo (1.10-1) UNRELEASED; urgency=low
 
+  [ Janos Guljas ]
   * New upstream release.
 
- -- Janos Guljas <janos@resenje.org>  Thu, 31 Mar 2011 01:26:13 +0200
+  [ Federico Ceratto ]
+  * FTBFS fixed (Closes: #620069). 
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Thu, 31 Mar 2011 20:17:41 +0000
 
 pymongo (1.9-1) unstable; urgency=low
 
