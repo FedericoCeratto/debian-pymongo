@@ -1,4 +1,4 @@
-pymongo (1.10-1) UNRELEASED; urgency=low
+pymongo (1.10-1) unstable; urgency=low
 
   [ Janos Guljas ]
   * New upstream release.
