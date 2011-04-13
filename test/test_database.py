@@ -151,7 +151,7 @@ class TestDatabase(unittest.TestCase):
 
     def test_profiling_levels(self):
         db = self.connection.pymongo_test
-        self.assertEqual(db.profiling_level(), OFF) #default
+        self.assertEqual(db.profiling_level(), OFF)  # default
 
         self.assertRaises(ValueError, db.set_profiling_level, 5.5)
         self.assertRaises(ValueError, db.set_profiling_level, None)
@@ -305,8 +305,10 @@ class TestDatabase(unittest.TestCase):
         obj = {"x": True}
         key = db.test.save(obj)
         self.assertEqual(obj, db.dereference(DBRef("test", key)))
-        self.assertEqual(obj, db.dereference(DBRef("test", key, "pymongo_test")))
-        self.assertRaises(ValueError, db.dereference, DBRef("test", key, "foo"))
+        self.assertEqual(obj,
+                         db.dereference(DBRef("test", key, "pymongo_test")))
+        self.assertRaises(ValueError,
+                          db.dereference, DBRef("test", key, "foo"))
 
         self.assertEqual(None, db.dereference(DBRef("test", 4)))
         obj = {"_id": 4}
@@ -483,6 +485,7 @@ class TestDatabase(unittest.TestCase):
 
         self.assertEqual(0, db.system.js.count())
         db.system_js.add = "function(a, b) { return a + b; }"
+        self.assertEqual('add', db.system.js.find_one()['_id'])
         self.assertEqual(1, db.system.js.count())
         self.assertEqual(6, db.system_js.add(1, 5))
 

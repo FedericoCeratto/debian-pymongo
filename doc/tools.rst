@@ -42,8 +42,8 @@ Ming
 MongoAlchemy
   `MongoAlchemy <http://mongoalchemy.org>`_ is another ORM-like layer on top of
   PyMongo. Its API is inspired by `SQLAlchemy <http://sqlalchemy.org>`_. The
-  code is available on `github <http://github.com/jeffjenkins/MongoAlchemy>`_;
-  for more information, see the `tutorial <http://mongoalchemy.org/tutorial.html>`_.
+  code is available `on github <http://github.com/jeffjenkins/MongoAlchemy>`_;
+  for more information, see `the tutorial <http://mongoalchemy.org/tutorial.html>`_.
 
 MongoEngine
   `MongoEngine <http://hmarr.com/mongoengine/>`_ is another ORM-like
@@ -58,18 +58,21 @@ django-mongodb-engine
   <http://github.com/django-mongodb-engine/mongodb-engine/>`_ is a MongoDB
   database backend for Django.
 
-pymongo-bongo
-  `pymongo-bongo <http://pypi.python.org/pypi/pymongo-bongo/>`_ is a
-  project to add some syntactic sugar on top of PyMongo. It is open
-  source and the code is available on `github
-  <http://github.com/svetlyak40wt/pymongo-bongo>`_.
+Minimongo
+  `minimongo <http://pypi.python.org/pypi/minimongo>`_ is a lightweight,
+  pythonic interface to MongoDB.  It retains pymongo's query and update API,
+  and provides a number of additional features, including a simple
+  document-oriented interface, connection pooling, index management, and
+  collection & database naming helpers. The `source is on github
+  <http://github.com/slacy/minimongo>`_.
 
 Smaller or less well-maintained projects (in order from most to least
 recently committed to at the time of the last update to this list):
 
-  - `mongodb-object <http://github.com/marcboeker/mongodb-object>`_
-  - `MongoMagic <http://bitbucket.org/bottiger/mongomagic/wiki/Home>`_
-  - `django-mongodb <http://bitbucket.org/kpot/django-mongodb/>`_
+  - `pymongo-bongo <http://pypi.python.org/pypi/pymongo-bongo/>`_ (11/2009)
+  - `mongodb-object <http://github.com/marcboeker/mongodb-object>`_ (10/2009)
+  - `MongoMagic <http://bitbucket.org/bottiger/mongomagic/wiki/Home>`_ (7/2009)
+  - `django-mongodb <http://bitbucket.org/kpot/django-mongodb/>`_ (7/2009)
 
 Framework Tools
 ---------------
@@ -83,8 +86,8 @@ mango
 mongodb_beaker
   `mongodb_beaker <http://pypi.python.org/pypi/mongodb_beaker>`_ is a
   project to enable using MongoDB as a backend for `beaker's
-  <http://beaker.groovie.org/>`_ caching / session system. The
-  `source is on github
+  <http://beaker.groovie.org/>`_ caching / session system.
+  `The source is on github
   <http://github.com/bwmcadams/mongodb_beaker>`_.
 
 MongoLog
