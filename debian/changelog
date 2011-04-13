@@ -1,11 +1,11 @@
-pymongo (1.10.1-1) UNRELEASED; urgency=low
+pymongo (1.10.1-1) unstable; urgency=low
 
   [ Federico Ceratto ]
   * New upstream release.
   * Standards-Version bumped to 3.9.2
   * Minor updates. 
 
- -- Federico Ceratto <federico.ceratto@gmail.com>  Wed, 13 Apr 2011 20:43:51 +0000
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Wed, 13 Apr 2011 22:54:38 +0200
 
 pymongo (1.10-1) unstable; urgency=low
 
