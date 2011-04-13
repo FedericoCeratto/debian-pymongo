@@ -1,6 +1,6 @@
 Metadata-Version: 1.0
 Name: pymongo
-Version: 1.10
+Version: 1.10.1
 Summary: Python driver for MongoDB <http://www.mongodb.org>
 Home-page: http://github.com/mongodb/mongo-python-driver
 Author: Bernie Hackett
