@@ -1,6 +1,6 @@
 pymongo (1.11-1) unstable; urgency=low
 
-  * New upstream release. 
+  * New upstream release, http://api.mongodb.org/python/1.11/changelog.html
 
  -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 14 Jun 2011 15:10:53 +0000
 
