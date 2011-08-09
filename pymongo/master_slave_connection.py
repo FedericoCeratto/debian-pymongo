@@ -21,12 +21,13 @@ or all slaves failed.
 
 import random
 
+from pymongo.common import BaseObject
 from pymongo.connection import Connection
 from pymongo.database import Database
 from pymongo.errors import AutoReconnect
 
 
-class MasterSlaveConnection(object):
+class MasterSlaveConnection(BaseObject):
     """A master-slave connection to Mongo.
     """
 
@@ -37,7 +38,8 @@ class MasterSlaveConnection(object):
         mechanisms as a regular `Connection`. The `Connection` instances used
         to create this `MasterSlaveConnection` can themselves make use of
         connection pooling, etc. 'Connection' instances used as slaves should
-        be created with the slave_okay option set to True.
+        be created with the slave_okay option set to True. Safe options are
+        inherited from `master` and can be changed in this instance.
 
         Raises TypeError if `master` is not an instance of `Connection` or
         slaves is not a list of at least one `Connection` instances.
@@ -56,6 +58,11 @@ class MasterSlaveConnection(object):
             if not isinstance(slave, Connection):
                 raise TypeError("slave %r is not an instance of Connection" %
                                 slave)
+
+        super(MasterSlaveConnection,
+              self).__init__(slave_okay=True,
+                             safe=master.safe,
+                             **(master.get_lasterror_options()))
 
         self.__in_request = False
         self.__master = master
@@ -79,14 +86,6 @@ class MasterSlaveConnection(object):
     def tz_aware(self):
         return True
 
-    @property
-    def slave_okay(self):
-        """Is it okay for this connection to connect directly to a slave?
-
-        This is always True for MasterSlaveConnection instances.
-        """
-        return True
-
     def disconnect(self):
         """Disconnect from MongoDB.
 
@@ -94,7 +93,7 @@ class MasterSlaveConnection(object):
         connections.
 
         .. seealso:: Module :mod:`~pymongo.connection`
-        .. versionadded:: 1.10+
+        .. versionadded:: 1.10.1
         """
         self.__master.disconnect()
         for slave in self.__slaves:

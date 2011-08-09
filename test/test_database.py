@@ -38,7 +38,8 @@ from pymongo.errors import (CollectionInvalid,
                             InvalidOperation,
                             OperationFailure)
 from pymongo.son_manipulator import (AutoReference,
-                                     NamespaceInjector)
+                                     NamespaceInjector,
+                                     ObjectIdShuffler)
 from test import version
 from test.test_connection import get_connection
 
@@ -181,9 +182,19 @@ class TestDatabase(unittest.TestCase):
         info = db.profiling_info()
         self.assert_(isinstance(info, list))
         self.assert_(len(info) >= 1)
-        self.assert_(isinstance(info[0]["info"], basestring))
+        # These basically clue us in to server changes.
+        if version.at_least(db.connection, (1, 9, 1, -1)):
+            self.assert_(isinstance(info[0]['responseLength'], int))
+            self.assert_(isinstance(info[0]['millis'], int))
+            self.assert_(isinstance(info[0]['client'], basestring))
+            self.assert_(isinstance(info[0]['user'], basestring))
+            self.assert_(isinstance(info[0]['ntoreturn'], int))
+            self.assert_(isinstance(info[0]['ns'], basestring))
+            self.assert_(isinstance(info[0]['op'], basestring))
+        else:
+            self.assert_(isinstance(info[0]["info"], basestring))
+            self.assert_(isinstance(info[0]["millis"], float))
         self.assert_(isinstance(info[0]["ts"], datetime.datetime))
-        self.assert_(isinstance(info[0]["millis"], float))
 
     def test_iteration(self):
         db = self.connection.pymongo_test
@@ -493,9 +504,16 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual('add', db.system.js.find_one()['_id'])
         self.assertEqual(1, db.system.js.count())
         self.assertEqual(6, db.system_js.add(1, 5))
-
         del db.system_js.add
         self.assertEqual(0, db.system.js.count())
+        
+        db.system_js['add'] = "function(a, b) { return a + b; }"
+        self.assertEqual('add', db.system.js.find_one()['_id'])
+        self.assertEqual(1, db.system.js.count())
+        self.assertEqual(6, db.system_js['add'](1, 5))
+        del db.system_js['add']
+        self.assertEqual(0, db.system.js.count())
+        
         if version.at_least(db.connection, (1, 3, 2, -1)):
             self.assertRaises(OperationFailure, db.system_js.add, 1, 5)
 
@@ -521,6 +539,24 @@ class TestDatabase(unittest.TestCase):
 
         del db.system_js.foo
         self.assertEqual(["bar"], db.system_js.list())
+
+    def test_manipulator_properties(self):
+        db = self.connection.foo
+        self.assertEquals(['ObjectIdInjector'], db.incoming_manipulators)
+        self.assertEquals([], db.incoming_copying_manipulators)
+        self.assertEquals([], db.outgoing_manipulators)
+        self.assertEquals([], db.outgoing_copying_manipulators)
+        db.add_son_manipulator(AutoReference(db))
+        db.add_son_manipulator(NamespaceInjector())
+        db.add_son_manipulator(ObjectIdShuffler())
+        self.assertEqual(2, len(db.incoming_manipulators))
+        for name in db.incoming_manipulators:
+            self.assertTrue(name in ('ObjectIdInjector', 'NamespaceInjector'))
+        self.assertEqual(2, len(db.incoming_copying_manipulators))
+        for name in db.incoming_copying_manipulators:
+            self.assertTrue(name in ('ObjectIdShuffler', 'AutoReference'))
+        self.assertEquals([], db.outgoing_manipulators)
+        self.assertEquals(['AutoReference'], db.outgoing_copying_manipulators)
 
 
 if __name__ == "__main__":

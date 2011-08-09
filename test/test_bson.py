@@ -68,6 +68,8 @@ class TestBSON(unittest.TestCase):
         self.assertFalse(is_valid("\x05\x00\x00\x00\x01"))
         self.assertFalse(is_valid("\x05\x00\x00\x00"))
         self.assertFalse(is_valid("\x05\x00\x00\x00\x00\x00"))
+        self.assertFalse(is_valid("\x07\x00\x00\x00\x02a\x00\x78\x56\x34\x12"))
+        self.assertFalse(is_valid("\x09\x00\x00\x00\x10a\x00\x05\x00"))
 
     def test_random_data_is_not_bson(self):
         qcheck.check_unittest(self, qcheck.isnt(is_valid),
@@ -120,7 +122,7 @@ class TestBSON(unittest.TestCase):
         self.assertEqual(BSON.encode({"test": Binary("test", 0)}),
                          "\x14\x00\x00\x00\x05\x74\x65\x73\x74\x00\x04\x00\x00"
                          "\x00\x00\x74\x65\x73\x74\x00")
-        self.assertEqual(BSON.encode({"test": Binary("test")}),
+        self.assertEqual(BSON.encode({"test": Binary("test", 2)}),
                          "\x18\x00\x00\x00\x05\x74\x65\x73\x74\x00\x08\x00\x00"
                          "\x00\x02\x04\x00\x00\x00\x74\x65\x73\x74\x00")
         self.assertEqual(BSON.encode({"test": Binary("test", 128)}),
@@ -171,6 +173,7 @@ class TestBSON(unittest.TestCase):
         helper({"a binary": Binary("test", 254)})
         helper({"another binary": Binary("test")})
         helper(SON([(u'test dst', datetime.datetime(1993, 4, 4, 2))]))
+        helper(SON([(u'test negative dst', datetime.datetime(1, 1, 1, 1, 1, 1))]))
         helper({"big float": float(10000000000)})
         helper({"ref": DBRef("coll", 5)})
         helper({"ref": DBRef("coll", 5, foo="bar", bar=4)})
@@ -185,6 +188,25 @@ class TestBSON(unittest.TestCase):
 
         qcheck.check_unittest(self, encode_then_decode,
                               qcheck.gen_mongo_dict(3))
+
+    def test_datetime_encode_decode(self):
+        # Negative timestamps
+        dt1 = datetime.datetime(1, 1, 1, 1, 1, 1)
+        dt2 = BSON.encode({"date": dt1}).decode()["date"]
+        self.assertEqual(dt1, dt2)
+
+        dt1 = datetime.datetime(1959, 6, 25, 12, 16, 59)
+        dt2 = BSON.encode({"date": dt1}).decode()["date"]
+        self.assertEqual(dt1, dt2)
+
+        # Positive timestamps
+        dt1 = datetime.datetime(9999, 12, 31, 23, 59, 59)
+        dt2 = BSON.encode({"date": dt1}).decode()["date"]
+        self.assertEqual(dt1, dt2)
+
+        dt1 = datetime.datetime(2011, 6, 14, 10, 47, 53)
+        dt2 = BSON.encode({"date": dt1}).decode()["date"]
+        self.assertEqual(dt1, dt2)
 
     def test_aware_datetime(self):
         aware = datetime.datetime(1993, 4, 4, 2,

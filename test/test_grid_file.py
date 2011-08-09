@@ -27,6 +27,8 @@ import sys
 import unittest
 sys.path[0:0] = [""]
 
+from nose.plugins.skip import SkipTest
+
 from bson.objectid import ObjectId
 from gridfs.grid_file import (_SEEK_CUR,
                               _SEEK_END,
@@ -471,6 +473,20 @@ Bye""")
         g = GridOut(self.db.fs, f._id)
         self.assertEqual("a", f.bar)
         self.assertEqual("b", f.baz)
+
+    def test_context_manager(self):
+        if sys.version_info < (2, 6):
+            raise SkipTest()
+
+        contents = "Imagine this is some important data..."
+        # Hack around python2.4 an 2.5 not supporting 'with' syntax
+        exec """
+with GridIn(self.db.fs, filename="important") as infile:
+    infile.write(contents)
+
+with GridOut(self.db.fs, infile._id) as outfile:
+    self.assertEqual(contents, outfile.read())
+"""
 
 
 if __name__ == "__main__":
