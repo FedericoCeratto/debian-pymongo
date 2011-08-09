@@ -1,3 +1,9 @@
+pymongo (2.0-1) unstable; urgency=low
+
+  * New upstream release, http://api.mongodb.org/python/2.0/changelog.html
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 09 Aug 2011 19:28:40 +0000
+
 pymongo (1.11-1) unstable; urgency=low
 
   * New upstream release, http://api.mongodb.org/python/1.11/changelog.html
