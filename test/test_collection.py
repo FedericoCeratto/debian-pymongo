@@ -33,6 +33,7 @@ from bson.objectid import ObjectId
 from bson.son import SON
 from pymongo import ASCENDING, DESCENDING
 from pymongo.collection import Collection
+from pymongo.son_manipulator import SONManipulator
 from pymongo.errors import (DuplicateKeyError,
                             InvalidDocument,
                             InvalidName,
@@ -49,6 +50,10 @@ class TestCollection(unittest.TestCase):
     def setUp(self):
         self.connection = get_connection()
         self.db = self.connection.pymongo_test
+
+    def tearDown(self):
+        self.db = None
+        self.connection = None
 
     def test_collection(self):
         self.assertRaises(TypeError, Collection, self.db, 5)
@@ -218,6 +223,24 @@ class TestCollection(unittest.TestCase):
                      [a["name"] for a in db.system.indexes
                       .find({"ns": u"pymongo_test.test"})])
 
+    def test_reindex(self):
+        db = self.db
+        db.drop_collection("test")
+        db.test.insert({"foo": "bar", "who": "what", "when": "how"})
+        db.test.create_index("foo")
+        db.test.create_index("who")
+        db.test.create_index("when")
+        info = db.test.index_information()
+        reindexed = db.test.reindex()
+        self.assertEqual(4, reindexed['nIndexes'])
+        self.assertEqual(4, reindexed['nIndexesWas'])
+        indexes = reindexed['indexes']
+        names = [idx['name'] for idx in indexes]
+        for name in names:
+            self.assertTrue(name in info)
+        for key in info:
+            self.assertTrue(key in names)
+
     def test_index_info(self):
         db = self.db
         db.test.drop_indexes()
@@ -282,8 +305,12 @@ class TestCollection(unittest.TestCase):
         self.assertEqual(db.test.doesnotexist.options(), {})
 
         db.drop_collection("test")
-        db.create_collection("test", capped=True)
-        self.assertEqual(db.test.options(), {"capped": True})
+        if version.at_least(db.connection, (1, 9)):
+            db.create_collection("test", capped=True, size=1000)
+            self.assertEqual(db.test.options(), {"capped": True, 'size': 1000})
+        else:
+            db.create_collection("test", capped=True)
+            self.assertEqual(db.test.options(), {"capped": True})
         db.drop_collection("test")
 
     def test_insert_find_one(self):
@@ -304,6 +331,14 @@ class TestCollection(unittest.TestCase):
 
         qcheck.check_unittest(self, remove_insert_find_one,
                               qcheck.gen_mongo_dict(3))
+
+    def test_generator_insert(self):
+        db = self.db
+        db.test.remove({})
+        self.assertEqual(db.test.find().count(), 0)
+        db.test.insert(({'a': i} for i in xrange(5)), manipulate=False)
+        self.assertEqual(5, db.test.count())
+        db.test.remove({})
 
     def test_remove_all(self):
         self.db.test.remove()
@@ -594,6 +629,7 @@ class TestCollection(unittest.TestCase):
     def test_safe_update(self):
         db = self.db
         v113minus = version.at_least(db.connection, (1, 1, 3, -1))
+        v19 = version.at_least(db.connection, (1, 9))
 
         db.drop_collection("test")
         db.test.create_index("x", unique=True)
@@ -602,7 +638,9 @@ class TestCollection(unittest.TestCase):
         id = db.test.insert({"x": 4})
 
         self.assertEqual(None, db.test.update({"_id": id}, {"$inc": {"x": 1}}))
-        if v113minus:
+        if v19:
+            self.assert_(db.error()["err"].startswith("E11000"))
+        elif v113minus:
             self.assert_(db.error()["err"].startswith("E11001"))
         else:
             self.assert_(db.error()["err"].startswith("E12011"))
@@ -1083,6 +1121,7 @@ class TestCollection(unittest.TestCase):
             result = db.test.map_reduce(map, reduce, out='mrunittests')
             self.assertEqual(1, result.find_one({"_id": "hampster"})["value"])
             db.test.remove({"id": 5})
+            warnings.simplefilter("ignore")
             result = db.test.map_reduce(map, reduce,
                                         out='mrunittests', merge_output=True)
             self.assertEqual(3, result.find_one({"_id": "cat"})["value"])
@@ -1090,6 +1129,7 @@ class TestCollection(unittest.TestCase):
 
             result = db.test.map_reduce(map, reduce,
                                         out='mrunittests', reduce_output=True)
+            warnings.simplefilter("default")
             self.assertEqual(6, result.find_one({"_id": "cat"})["value"])
             self.assertEqual(4, result.find_one({"_id": "dog"})["value"])
             self.assertEqual(2, result.find_one({"_id": "mouse"})["value"])
@@ -1103,6 +1143,20 @@ class TestCollection(unittest.TestCase):
                               merge_output=True,
                               reduce_output=True)
 
+            result = db.test.map_reduce(map, reduce, out={'replace': 'mrunittests'})
+            self.assertEqual(3, result.find_one({"_id": "cat"})["value"])
+            self.assertEqual(2, result.find_one({"_id": "dog"})["value"])
+            self.assertEqual(1, result.find_one({"_id": "mouse"})["value"])
+
+            result = db.test.map_reduce(map, reduce,
+                                        out=SON([('replace', 'mrunittests'),
+                                                 ('db', 'mrtestdb')
+                                                ]))
+            self.assertEqual(3, result.find_one({"_id": "cat"})["value"])
+            self.assertEqual(2, result.find_one({"_id": "dog"})["value"])
+            self.assertEqual(1, result.find_one({"_id": "mouse"})["value"])
+            self.connection.drop_database('mrtestdb')
+
         full_result = db.test.map_reduce(map, reduce,
                                          out='mrunittests', full_response=True)
         self.assertEqual(6, full_result["counts"]["emit"])
@@ -1113,6 +1167,13 @@ class TestCollection(unittest.TestCase):
         self.assertEqual(None, result.find_one({"_id": "mouse"}))
 
         if version.at_least(self.db.connection, (1, 7, 4)):
+            result = db.test.map_reduce(map, reduce, out={'inline': 1})
+            self.assertTrue(isinstance(result, dict))
+            self.assertTrue('results' in result)
+            self.assertTrue(result['results'][1]["_id"] in ("cat",
+                                                            "dog",
+                                                            "mouse"))
+
             result = db.test.inline_map_reduce(map, reduce)
             self.assertTrue(isinstance(result, list))
             self.assertEqual(3, len(result))
@@ -1183,6 +1244,30 @@ class TestCollection(unittest.TestCase):
                          c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
                                            upsert=True, new=True))
 
+        self.assertEqual({'_id': 1, 'i': 2},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
+                                           fields=['i']))
+        self.assertEqual({'_id': 1, 'i': 4},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
+                                           new=True, fields={'i': 1}))
+
+    def test_disabling_manipulators(self):
+
+        class IncByTwo(SONManipulator):
+            def transform_outgoing(self, son, collection):
+                if 'foo' in son:
+                    son['foo'] += 2
+                return son
+
+        db = self.connection.pymongo_test
+        db.add_son_manipulator(IncByTwo())
+        c = db.test
+        c.drop()
+        c.insert({'foo': 0})
+        self.assertEqual(2, c.find_one()['foo'])
+        self.assertEqual(0, c.find_one(manipulate=False)['foo'])
+        self.assertEqual(2, c.find_one(manipulate=True)['foo'])
+        c.remove({})
 
 if __name__ == "__main__":
     unittest.main()

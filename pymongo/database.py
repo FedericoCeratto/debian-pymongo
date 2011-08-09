@@ -19,7 +19,7 @@ import warnings
 from bson.code import Code
 from bson.dbref import DBRef
 from bson.son import SON
-from pymongo import helpers
+from pymongo import common, helpers
 from pymongo.collection import Collection
 from pymongo.errors import (CollectionInvalid,
                             InvalidName,
@@ -39,7 +39,7 @@ def _check_name(name):
                               "character %r" % invalid_char)
 
 
-class Database(object):
+class Database(common.BaseObject):
     """A Mongo database.
     """
 
@@ -58,6 +58,10 @@ class Database(object):
 
         .. mongodoc:: databases
         """
+        super(Database, self).__init__(slave_okay=connection.slave_okay,
+                                       safe=connection.safe,
+                                       **(connection.get_lasterror_options()))
+
         if not isinstance(name, basestring):
             raise TypeError("name must be an instance of basestring")
 
@@ -71,7 +75,6 @@ class Database(object):
         self.__outgoing_manipulators = []
         self.__outgoing_copying_manipulators = []
         self.add_son_manipulator(ObjectIdInjector())
-        self.__system_js = SystemJS(self)
 
     def add_son_manipulator(self, manipulator):
         """Add a new son manipulator to this database.
@@ -104,7 +107,7 @@ class Database(object):
 
         .. versionadded:: 1.5
         """
-        return self.__system_js
+        return SystemJS(self)
 
     @property
     def connection(self):
@@ -124,6 +127,46 @@ class Database(object):
            ``name`` is now a property rather than a method.
         """
         return self.__name
+
+    @property
+    def incoming_manipulators(self):
+        """List all incoming SON manipulators
+        installed on this instance.
+
+        .. versionadded:: 2.0
+        """
+        return [manipulator.__class__.__name__
+                for manipulator in self.__incoming_manipulators]
+
+    @property
+    def incoming_copying_manipulators(self):
+        """List all incoming SON copying manipulators
+        installed on this instance.
+
+        .. versionadded:: 2.0
+        """
+        return [manipulator.__class__.__name__
+                for manipulator in self.__incoming_copying_manipulators]
+
+    @property
+    def outgoing_manipulators(self):
+        """List all outgoing SON manipulators
+        installed on this instance.
+
+        .. versionadded:: 2.0
+        """
+        return [manipulator.__class__.__name__
+                for manipulator in self.__outgoing_manipulators]
+
+    @property
+    def outgoing_copying_manipulators(self):
+        """List all outgoing SON copying manipulators
+        installed on this instance.
+
+        .. versionadded:: 2.0
+        """
+        return [manipulator.__class__.__name__
+                for manipulator in self.__outgoing_copying_manipulators]
 
     def __cmp__(self, other):
         if isinstance(other, Database):
@@ -281,6 +324,10 @@ class Database(object):
         if isinstance(command, basestring):
             command = SON([(command, value)])
 
+        fields = kwargs.get('fields')
+        if fields is not None and not isinstance(fields, dict):
+                kwargs['fields'] = helpers._fields_list_to_dict(fields)
+
         command.update(kwargs)
 
         result = self["$cmd"].find_one(command,
@@ -345,9 +392,9 @@ class Database(object):
                     of the structure of the collection and the individual
                     documents. Ignored in MongoDB versions before 1.9.
 
-        .. versionchanged:: 1.10.1+
+        .. versionchanged:: 1.11
            validate_collection previously returned a string.
-        .. versionadded:: 1.10.1+
+        .. versionadded:: 1.11
            Added `scandata` and `full` options.
         """
         name = name_or_collection
@@ -387,6 +434,11 @@ class Database(object):
             raise CollectionInvalid("%s invalid: %r" % (name, result))
 
         return result
+
+    def current_op(self):
+        """Get information on operations currently running.
+        """
+        return self['$cmd.sys.inprog'].find_one()
 
     def profiling_level(self):
         """Get the database's current profiling level.
@@ -434,7 +486,7 @@ class Database(object):
         error = self.command("getlasterror")
         if error.get("err", 0) is None:
             return None
-        if error["err"] == "not master":
+        if error["err"].startswith("not master"):
             self.__connection.disconnect()
         return error
 
@@ -509,28 +561,28 @@ class Database(object):
         Once authenticated, the user has full read and write access to
         this database. Raises :class:`TypeError` if either `name` or
         `password` is not an instance of ``(str,
-        unicode)``. Authentication lasts for the life of the database
-        connection, or until :meth:`logout` is called.
+        unicode)``. Authentication lasts for the life of the underlying
+        :class:`~pymongo.connection.Connection`, or until :meth:`logout`
+        is called.
 
         The "admin" database is special. Authenticating on "admin"
         gives access to *all* databases. Effectively, "admin" access
         means root access to the database.
 
-        .. note:: Currently, authentication is per
-           :class:`~socket.socket`. This means that there are a couple
-           of situations in which re-authentication is necessary:
-
-           - On failover (when an
-             :class:`~pymongo.errors.AutoReconnect` exception is
-             raised).
-
-           - After a call to
-             :meth:`~pymongo.connection.Connection.disconnect` or
-             :meth:`~pymongo.connection.Connection.end_request`.
+        .. note:: This method authenticates the current connection, and
+           will also cause all new :class:`~socket.socket` connections
+           in the underlying :class:`~pymongo.connection.Connection` to
+           be authenticated automatically.
 
            - When sharing a :class:`~pymongo.connection.Connection`
-             between multiple threads, each thread will need to
-             authenticate separately.
+             between multiple threads, all threads will share the
+             authentication. If you need different authentication profiles
+             for different purposes (e.g. admin users) you must use
+             distinct instances of :class:`~pymongo.connection.Connection`.
+
+           - To get authentication to apply immediately to all
+             existing sockets you may need to reset this Connection's
+             sockets using :meth:`~pymongo.connection.Connection.disconnect`.
 
         .. warning:: Currently, calls to
            :meth:`~pymongo.connection.Connection.end_request` will
@@ -556,16 +608,24 @@ class Database(object):
         try:
             self.command("authenticate", user=unicode(name),
                          nonce=nonce, key=key)
+            self.connection._cache_credentials(self.name,
+                                               unicode(name),
+                                               unicode(password))
             return True
         except OperationFailure:
             return False
 
     def logout(self):
-        """Deauthorize use of this database for this connection.
+        """Deauthorize use of this database for this connection
+        and future connections.
 
-        Note that other databases may still be authorized.
+        .. note:: Other databases may still be authenticated, and other
+           existing :class:`~socket.socket` connections may remain
+           authenticated for this database unless you reset all sockets
+           with :meth:`~pymongo.connection.Connection.disconnect`.
         """
         self.command("logout")
+        self.connection._purge_credentials(self.name)
 
     def dereference(self, dbref):
         """Dereference a :class:`~bson.dbref.DBRef`, getting the
@@ -629,8 +689,8 @@ class SystemJS(object):
     def __init__(self, database):
         """Get a system js helper for the database `database`.
 
-        An instance of :class:`SystemJS` is automatically created for
-        each :class:`Database` instance as :attr:`Database.system_js`,
+        An instance of :class:`SystemJS` can be created with an instance
+        of :class:`Database` through :attr:`Database.system_js`,
         manual instantiation of this class should not be necessary.
 
         :class:`SystemJS` instances allow for easy manipulation and
@@ -657,12 +717,23 @@ class SystemJS(object):
     def __setattr__(self, name, code):
         self._db.system.js.save({"_id": name, "value": Code(code)}, safe=True)
 
+    def __setitem__(self, name, code):
+        self.__setattr__(name, code)
+
     def __delattr__(self, name):
         self._db.system.js.remove({"_id": name}, safe=True)
 
+    def __delitem__(self, name):
+        self.__delattr__(name)
+
     def __getattr__(self, name):
-        return lambda *args: self._db.eval("function() { return %s.apply(this,"
-                                           "arguments); }" % name, *args)
+        return lambda *args: self._db.eval(Code("function() { "
+                                                "return this[name].apply("
+                                                "this, arguments); }",
+                                                scope={'name': name}), *args)
+
+    def __getitem__(self, name):
+        return self.__getattr__(name)
 
     def list(self):
         """Get a list of the names of the functions stored in this database.

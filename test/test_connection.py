@@ -26,8 +26,7 @@ from nose.plugins.skip import SkipTest
 
 from bson.son import SON
 from bson.tz_util import utc
-from pymongo.connection import (Connection,
-                                _parse_uri)
+from pymongo.connection import Connection
 from pymongo.database import Database
 from pymongo.errors import (AutoReconnect,
                             ConfigurationError,
@@ -236,70 +235,8 @@ class TestConnection(unittest.TestCase):
 
         coll.count()
 
-    def test_parse_uri(self):
-        self.assertEqual(([("localhost", 27017)], None, None, None, None, {}),
-                         _parse_uri("localhost", 27017))
-        self.assertEqual(([("localhost", 27018)], None, None, None, None, {}),
-                         _parse_uri("localhost", 27018))
-        self.assertRaises(InvalidURI, _parse_uri,
-                          "http://foobar.com", 27017)
-        self.assertRaises(InvalidURI, _parse_uri,
-                          "http://foo@foobar.com", 27017)
-
-        self.assertEqual(([("localhost", 27017)], None, None, None, None, {}),
-                         _parse_uri("mongodb://localhost", 27017))
-        self.assertEqual(([("localhost", 27017)], None,
-                          "fred", "foobar", None, {}),
-                         _parse_uri("mongodb://fred:foobar@localhost",
-                                               27017))
-        self.assertEqual(([("localhost", 27017)], "baz",
-                          "fred", "foobar", None, {}),
-                         _parse_uri("mongodb://fred:foobar@localhost/baz",
-                                               27017))
-        self.assertEqual(([("example1.com", 27017), ("example2.com", 27017)],
-                          None, None, None, None, {}),
-                         _parse_uri("mongodb://"
-                                    "example1.com:27017,example2.com:27017",
-                                    27018))
-        self.assertEqual(([("localhost", 27017),
-                           ("localhost", 27018),
-                           ("localhost", 27019)], None, None, None, None, {}),
-                         _parse_uri("mongodb://localhost,"
-                                    "localhost:27018,localhost:27019",
-                                    27017))
-
-        self.assertEqual(([("localhost", 27018)], None, None, None, None, {}),
-                         _parse_uri("localhost:27018", 27017))
-        self.assertEqual(([("localhost", 27017)], "foo", None, None, None, {}),
-                         _parse_uri("localhost/foo", 27017))
-        self.assertEqual(([("localhost", 27017)], None, None, None, None, {}),
-                         _parse_uri("localhost/", 27017))
-
-        self.assertEqual(([("localhost", 27017)], "test",
-                          None, None, "yield_historical.in", {}),
-                         _parse_uri("mongodb://"
-                                    "localhost/test.yield_historical.in",
-                                    27017))
-        self.assertEqual(([("localhost", 27017)], "test", "fred",
-                          "foobar", "yield_historical.in", {}),
-                         _parse_uri("mongodb://fred:foobar@localhost/"
-                                    "test.yield_historical.in",
-                                    27017))
-        self.assertEqual(([("example1.com", 27017), ("example2.com", 27017)],
-                          "test", None, None, "yield_historical.in", {}),
-                         _parse_uri("mongodb://example1.com:27017,example2.com"
-                                    ":27017/test.yield_historical.in",
-                                    27017))
-        self.assertEqual(([("localhost", 27017)], "test", "fred", "foobar",
-                          "yield_historical.in", {'slaveok': 'true'}),
-                         _parse_uri("mongodb://fred:foobar@localhost/"
-                                    "test.yield_historical.in?slaveok=true",
-                                    27017))
-
     def test_from_uri(self):
         c = Connection(self.host, self.port)
-
-        self.assertRaises(InvalidURI, Connection, "mongodb://localhost/baz")
 
         self.assertEqual(c, Connection("mongodb://%s:%s" %
                                        (self.host, self.port)))
@@ -308,6 +245,7 @@ class TestConnection(unittest.TestCase):
         c.pymongo_test.system.users.remove({})
 
         c.admin.add_user("admin", "pass")
+        c.admin.authenticate("admin", "pass")
         c.pymongo_test.add_user("user", "pass")
 
         self.assertRaises(ConfigurationError, Connection,
@@ -332,6 +270,8 @@ class TestConnection(unittest.TestCase):
                                 slave_okay=True).slave_okay)
         self.assert_(Connection("mongodb://%s:%s/?slaveok=true;w=2" %
                                 (self.host, self.port)).slave_okay)
+        c.admin.system.users.remove({})
+        c.pymongo_test.system.users.remove({})
 
     def test_fork(self):
         """Test using a connection before and after a fork.
@@ -464,17 +404,7 @@ class TestConnection(unittest.TestCase):
                 naive.pymongo_test.test.find_one()["x"])
 
     def test_ipv6(self):
-        self.assertRaises(InvalidURI, _parse_uri, "::1", 27017)
-        self.assertRaises(InvalidURI, _parse_uri, "[::1", 27017)
-        self.assertRaises(InvalidURI, _parse_uri, "::1]:27017")
-        self.assertRaises(InvalidURI, _parse_uri, "mongodb://::1", 27017)
-        self.assert_(_parse_uri, "mongodb://[::1]:27017/?slaveOk=true")
-        self.assert_(_parse_uri,
-                     "[::1]:27017,[2001:0db8:85a3:0000:0000:8a2e:0370:7334]"
-                     ":27018,192.168.0.212:27019,localhost:27020")
-        self.assert_(_parse_uri,
-                     "mongodb://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]"
-                     ":27017/?slaveOk=true")
+        self.assertRaises(AutoReconnect, Connection, 'foo')
         try:
             connection = Connection("[::1]")
         except:
@@ -493,6 +423,33 @@ class TestConnection(unittest.TestCase):
         dbs = connection.database_names()
         self.assert_("pymongo_test" in dbs)
         self.assert_("pymongo_test_bernie" in dbs)
+
+    def test_autoreconnect(self):
+        def find_one(conn):
+            return conn.test.stuff.find_one()
+        # Simulate a temporary connection failure
+        c = Connection('foo', _connect=False)
+        self.assertRaises(AutoReconnect, find_one, c)
+        c._Connection__nodes = set([('localhost', 27017)])
+        self.assert_(find_one, c)
+
+    def test_fsync_lock_unlock(self):
+        c = get_connection()
+        self.assertFalse(c.is_locked)
+        # async flushing not supported on windows...
+        if sys.platform not in ('cygwin', 'win32'):
+            c.fsync(async=True)
+            self.assertFalse(c.is_locked)
+        c.fsync(lock=True)
+        self.assertTrue(c.is_locked)
+        locked = True
+        c.unlock()
+        for _ in xrange(5):
+            locked = c.is_locked
+            if not locked:
+                break
+            time.sleep(1)
+        self.assertFalse(locked)
 
 
 if __name__ == "__main__":

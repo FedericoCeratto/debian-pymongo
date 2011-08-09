@@ -455,6 +455,75 @@ class TestCursor(unittest.TestCase):
         cursor = self.db.test.find(as_class=MyClass)
         self.assertEqual(type(MyClass()), type(cursor[0]))
 
+        # Just test attributes
+        cursor = self.db.test.find(skip=1,
+                                   timeout=False,
+                                   snapshot=True,
+                                   tailable=True,
+                                   as_class=MyClass,
+                                   slave_okay=True,
+                                   await_data=True,
+                                   partial=True,
+                                   manipulate=False).limit(2)
+        cursor.add_option(64)
+
+        cursor2 = cursor.clone()
+        self.assertEqual(cursor._Cursor__skip, cursor2._Cursor__skip)
+        self.assertEqual(cursor._Cursor__limit, cursor2._Cursor__limit)
+        self.assertEqual(cursor._Cursor__timeout, cursor2._Cursor__timeout)
+        self.assertEqual(cursor._Cursor__snapshot, cursor2._Cursor__snapshot)
+        self.assertEqual(cursor._Cursor__tailable, cursor2._Cursor__tailable)
+        self.assertEqual(type(cursor._Cursor__as_class),
+                         type(cursor2._Cursor__as_class))
+        self.assertEqual(cursor._Cursor__slave_okay,
+                         cursor2._Cursor__slave_okay)
+        self.assertEqual(cursor._Cursor__await_data,
+                         cursor2._Cursor__await_data)
+        self.assertEqual(cursor._Cursor__partial, cursor2._Cursor__partial)
+        self.assertEqual(cursor._Cursor__manipulate,
+                         cursor2._Cursor__manipulate)
+        self.assertEqual(cursor._Cursor__query_flags,
+                         cursor2._Cursor__query_flags)
+
+    def test_add_remove_option(self):
+        cursor = self.db.test.find()
+        self.assertEqual(0, cursor._Cursor__query_options())
+        cursor.add_option(2)
+        cursor2 = self.db.test.find(tailable=True)
+        self.assertEqual(2, cursor2._Cursor__query_options())
+        self.assertEqual(cursor._Cursor__query_options(),
+                         cursor2._Cursor__query_options())
+        cursor.add_option(32)
+        cursor2 = self.db.test.find(tailable=True, await_data=True)
+        self.assertEqual(34, cursor2._Cursor__query_options())
+        self.assertEqual(cursor._Cursor__query_options(),
+                         cursor2._Cursor__query_options())
+        cursor.add_option(128)
+        cursor2 = self.db.test.find(tailable=True,
+                                    await_data=True).add_option(128)
+        self.assertEqual(162, cursor2._Cursor__query_options())
+        self.assertEqual(cursor._Cursor__query_options(),
+                         cursor2._Cursor__query_options())
+
+        self.assertEqual(162, cursor._Cursor__query_options())
+        cursor.add_option(128)
+        self.assertEqual(162, cursor._Cursor__query_options())
+
+        cursor.remove_option(128)
+        cursor2 = self.db.test.find(tailable=True, await_data=True)
+        self.assertEqual(34, cursor2._Cursor__query_options())
+        self.assertEqual(cursor._Cursor__query_options(),
+                         cursor2._Cursor__query_options())
+        cursor.remove_option(32)
+        cursor2 = self.db.test.find(tailable=True)
+        self.assertEqual(2, cursor2._Cursor__query_options())
+        self.assertEqual(cursor._Cursor__query_options(),
+                         cursor2._Cursor__query_options())
+
+        self.assertEqual(2, cursor._Cursor__query_options())
+        cursor.remove_option(32)
+        self.assertEqual(2, cursor._Cursor__query_options())
+
     def test_count_with_fields(self):
         self.db.test.drop()
         self.db.test.save({"x": 1})
@@ -664,6 +733,25 @@ class TestCursor(unittest.TestCase):
         self.assertEqual(50, len(list(self.db.test.find()
                                       .max_scan(90).max_scan(50))))
 
+    def test_with_statement(self):
+        if sys.version_info < (2, 6):
+            raise SkipTest()
+
+        self.db.drop_collection("test")
+        for _ in range(100):
+            self.db.test.insert({})
+
+        c1  = self.db.test.find()
+        exec """
+with self.db.test.find() as c2:
+    self.assertTrue(c2.alive)
+self.assertFalse(c2.alive)
+
+with self.db.test.find() as c2:
+    self.assertEqual(100, len(list(c2)))
+self.assertFalse(c2.alive)
+"""
+        self.assertTrue(c1.alive)
 
 if __name__ == "__main__":
     unittest.main()

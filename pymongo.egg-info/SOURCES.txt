@@ -73,6 +73,7 @@ doc/api/pymongo/son.rst
 doc/api/pymongo/son_manipulator.rst
 doc/api/pymongo/timestamp.rst
 doc/api/pymongo/tz_util.rst
+doc/api/pymongo/uri_parser.rst
 doc/examples/custom_type.rst
 doc/examples/geo.rst
 doc/examples/gridfs.rst
@@ -87,6 +88,7 @@ pymongo/_cmessagemodule.c
 pymongo/binary.py
 pymongo/code.py
 pymongo/collection.py
+pymongo/common.py
 pymongo/connection.py
 pymongo/cursor.py
 pymongo/cursor_manager.py
@@ -104,6 +106,7 @@ pymongo/son.py
 pymongo/son_manipulator.py
 pymongo/timestamp.py
 pymongo/tz_util.py
+pymongo/uri_parser.py
 pymongo.egg-info/PKG-INFO
 pymongo.egg-info/SOURCES.txt
 pymongo.egg-info/dependency_links.txt
@@ -114,6 +117,7 @@ test/test_binary.py
 test/test_bson.py
 test/test_code.py
 test/test_collection.py
+test/test_common.py
 test/test_connection.py
 test/test_cursor.py
 test/test_database.py
@@ -131,6 +135,7 @@ test/test_son.py
 test/test_son_manipulator.py
 test/test_threads.py
 test/test_timestamp.py
+test/test_uri_parser.py
 test/version.py
 tools/README.rst
 tools/auto_reconnect_test.py

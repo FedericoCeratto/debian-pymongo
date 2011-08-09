@@ -18,7 +18,8 @@ import warnings
 
 from bson.code import Code
 from bson.son import SON
-from pymongo import (helpers,
+from pymongo import (common,
+                     helpers,
                      message)
 from pymongo.cursor import Cursor
 from pymongo.errors import InvalidName, InvalidOperation
@@ -32,7 +33,7 @@ def _gen_index_name(keys):
     return u"_".join([u"%s_%s" % item for item in keys])
 
 
-class Collection(object):
+class Collection(common.BaseObject):
     """A Mongo collection.
     """
 
@@ -68,6 +69,10 @@ class Collection(object):
 
         .. mongodoc:: collections
         """
+        super(Collection, self).__init__(slave_okay=database.slave_okay,
+                                         safe=database.safe,
+                                         **(database.get_lasterror_options()))
+
         if not isinstance(name, basestring):
             raise TypeError("name must be an instance of basestring")
 
@@ -268,8 +273,11 @@ class Collection(object):
         if manipulate:
             docs = [self.__database._fix_incoming(doc, self) for doc in docs]
 
-        if kwargs:
+        if self.safe or kwargs:
             safe = True
+            if not kwargs:
+                kwargs.update(self.get_lasterror_options())
+
         self.__database.connection._send_message(
             message.insert(self.__full_name, docs,
                            check_keys, safe, kwargs), safe)
@@ -357,11 +365,13 @@ class Collection(object):
         if not isinstance(upsert, bool):
             raise TypeError("upsert must be an instance of bool")
 
-        if upsert and manipulate:
+        if manipulate:
             document = self.__database._fix_incoming(document, self)
 
-        if kwargs:
+        if self.safe or kwargs:
             safe = True
+            if not kwargs:
+                kwargs.update(self.get_lasterror_options())
 
         return self.__database.connection._send_message(
             message.update(self.__full_name, upsert, multi,
@@ -434,8 +444,10 @@ class Collection(object):
         if not isinstance(spec_or_id, dict):
             spec_or_id = {"_id": spec_or_id}
 
-        if kwargs:
+        if self.safe or kwargs:
             safe = True
+            if not kwargs:
+                kwargs.update(self.get_lasterror_options())
 
         return self.__database.connection._send_message(
             message.delete(self.__full_name, spec_or_id, safe, kwargs), safe)
@@ -534,12 +546,25 @@ class Collection(object):
             :attr:`~pymongo.connection.Connection.document_class`)
           - `slave_okay` (optional): if True, allows this query to
             be run against a replica secondary.
+          - `await_data` (optional): if True, the server will block for
+            some extra time before returning, waiting for more data to
+            return. Ignored if `tailable` is False.
+          - `partial` (optional): if True, mongos will return partial
+            results if some shards are down instead of returning an error.
+          - `manipulate`: (optional): If True (the default), apply any
+            outgoing SON manipulators before returning.
           - `network_timeout` (optional): specify a timeout to use for
             this query, which will override the
             :class:`~pymongo.connection.Connection`-level default
 
+        .. note:: The `manipulate` parameter may default to False in
+           a future release.
+
         .. note:: The `max_scan` parameter requires server
            version **>= 1.5.1**
+
+        .. versionadded:: 1.11+
+           The `await_data`, `partial`, and `manipulate` parameters.
 
         .. versionadded:: 1.8
            The `network_timeout` parameter.
@@ -556,6 +581,8 @@ class Collection(object):
 
         .. mongodoc:: find
         """
+        if not 'slave_okay' in kwargs and self.slave_okay:
+            kwargs['slave_okay'] = True
         return Cursor(self, *args, **kwargs)
 
     def count(self):
@@ -763,6 +790,17 @@ class Collection(object):
         self.__database.command("dropIndexes", self.__name, index=name,
                                 allowable_errors=["ns not found"])
 
+    def reindex(self):
+        """Rebuilds all indexes on this collection.
+
+        .. warning:: reindex blocks all other operations (indexes
+           are built in the foreground) and will be slow for large
+           collections.
+
+        .. versionadded:: 1.11+
+        """
+        return self.__database.command("reIndex", self.__name)
+
     def index_information(self):
         """Get information on this collection's indexes.
 
@@ -933,15 +971,21 @@ class Collection(object):
         :Parameters:
           - `map`: map function (as a JavaScript string)
           - `reduce`: reduce function (as a JavaScript string)
-          - `out` (required): output collection name
-          - `merge_output` (optional): Merge output into `out`. If the same
-            key exists in both the result set and the existing output
-            collection, the new key will overwrite the existing key
-          - `reduce_output` (optional): If documents exist for a given key
-            in the result set and in the existing output collection, then a
-            reduce operation (using the specified reduce function) will be
-            performed on the two values and the result will be written to
-            the output collection
+          - `out`: output collection name or `out object` (dict). See
+            the `map reduce command`_ documentation for available options.
+            Note: `out` options are order sensitive. :class:`~bson.son.SON`
+            can be used to specify multiple options.
+            e.g. SON([('replace', <collection name>), ('db', <database name>)])
+          - `merge_output` (optional) DEPRECATED: Merge output into `out`.
+            If the same key exists in both the result set and the existing
+            output collection, the new key will overwrite the existing key.
+            Ignored if `out` is not an instance of `basestring`.
+          - `reduce_output` (optional) DEPRECATED: If documents exist for
+            a given key in the result set and in the existing output
+            collection, then a reduce operation (using the specified reduce
+            function) will be performed on the two values and the result will
+            be written to the output collection.
+            Ignored if `out` is not an instance of `basestring`.
           - `full_response` (optional): if ``True``, return full response to
             this command - otherwise just return the result collection
           - `**kwargs` (optional): additional arguments to the
@@ -954,31 +998,46 @@ class Collection(object):
 
         .. seealso:: :doc:`/examples/map_reduce`
 
+        .. versionchanged:: 1.11+
+           DEPRECATED The merge_output and reduce_output parameters.
+
         .. versionadded:: 1.2
 
         .. _map reduce command: http://www.mongodb.org/display/DOCS/MapReduce
 
         .. mongodoc:: mapreduce
         """
-        if not isinstance(out, basestring):
-            raise TypeError("'out' must be an instance of basestring")
-
+        if merge_output or reduce_output:
+            warnings.warn("merge_output and reduce_output are deprecated, "
+                          "please pass {<merge|reduce>: <collection name>} "
+                          "as the 'out' parameter instead.",
+                          DeprecationWarning)
         if merge_output and reduce_output:
-            raise InvalidOperation("Can't do both merge"
-                                   " and re-reduce of output.")
+            raise InvalidOperation("Can't do both merge "
+                                   "and re-reduce of output.")
 
-        if merge_output:
-            out_conf = {"merge": out}
-        elif reduce_output:
-            out_conf = {"reduce": out}
-        else:
+        if isinstance(out, basestring):
+            if merge_output:
+                out_conf = {"merge": out}
+            elif reduce_output:
+                out_conf = {"reduce": out}
+            else:
+                out_conf = out
+        elif isinstance(out, dict):
             out_conf = out
+        else:
+            raise TypeError("'out' must be an instance of basestring or dict")
 
         response = self.__database.command("mapreduce", self.__name,
                                            map=map, reduce=reduce,
                                            out=out_conf, **kwargs)
-        if full_response:
+
+        if full_response or not response.get('result'):
             return response
+        elif isinstance(response['result'], dict):
+            dbase = response['result']['db']
+            coll = response['result']['collection']
+            return self.__database.connection[dbase][coll]
         else:
             return self.__database[response["result"]]
 

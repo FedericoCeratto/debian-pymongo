@@ -42,9 +42,11 @@ import threading
 import time
 import warnings
 
-from pymongo import (database,
+from pymongo import (common,
+                     database,
                      helpers,
-                     message)
+                     message,
+                     uri_parser)
 from pymongo.cursor_manager import CursorManager
 from pymongo.errors import (AutoReconnect,
                             ConfigurationError,
@@ -58,103 +60,6 @@ from pymongo.errors import (AutoReconnect,
 _CONNECT_TIMEOUT = 20.0
 
 
-def _partition_ipv6(source):
-    if source.find(']') == -1:
-        raise InvalidURI("an IPv6 address literal must be "
-                         "enclosed in '[' and ']' characters.")
-    i = source.find(']:')
-    if i == -1:
-        return (source[1:-1], None)
-    return (source[1: i], source[i + 2:])
-
-
-def _partition(source, sub):
-    """Our own string partitioning method.
-
-    Splits `source` on `sub`.
-    """
-    i = source.find(sub)
-    if i == -1:
-        return (source, None)
-    return (source[:i], source[i + len(sub):])
-
-
-def _str_to_node(string, default_port=27017):
-    """Convert a string to a node tuple.
-
-    "localhost:27017" -> ("localhost", 27017)
-    """
-    # IPv6 literal
-    if string[0] == '[':
-        host, port = _partition_ipv6(string)
-    elif string.count(':') > 1 or string.find(']') != -1:
-        raise InvalidURI("an IPv6 address literal must be "
-                         "enclosed in '[' and ']' characters.")
-    else:
-        host, port = _partition(string, ":")
-    if port:
-        port = int(port)
-    else:
-        port = default_port
-    return (host, port)
-
-
-def _parse_uri(uri, default_port=27017):
-    """MongoDB URI parser.
-    """
-
-    if uri.startswith("mongodb://"):
-        uri = uri[len("mongodb://"):]
-    elif "://" in uri:
-        raise InvalidURI("Invalid uri scheme: %s" % _partition(uri, "://")[0])
-
-    (hosts, namespace) = _partition(uri, "/")
-
-    raw_options = None
-    if namespace:
-        (namespace, raw_options) = _partition(namespace, "?")
-        if namespace.find(".") < 0:
-            db = namespace
-            collection = None
-        else:
-            (db, collection) = namespace.split(".", 1)
-    else:
-        db = None
-        collection = None
-
-    username = None
-    password = None
-    if "@" in hosts:
-        (auth, hosts) = _partition(hosts, "@")
-
-        if ":" not in auth:
-            raise InvalidURI("auth must be specified as "
-                             "'username:password@'")
-        (username, password) = _partition(auth, ":")
-
-    host_list = []
-    for host in hosts.split(","):
-        if not host:
-            raise InvalidURI("empty host (or extra comma in host list)")
-        host_list.append(_str_to_node(host, default_port))
-
-    options = {}
-    if raw_options:
-        raw_options = raw_options.lower()
-        and_idx = raw_options.find("&")
-        semi_idx = raw_options.find(";")
-        if and_idx >= 0 and semi_idx >= 0:
-            raise InvalidURI("Cannot mix & and ; for option separators.")
-        elif and_idx >= 0:
-            options = dict([kv.split("=") for kv in raw_options.split("&")])
-        elif semi_idx >= 0:
-            options = dict([kv.split("=") for kv in raw_options.split(";")])
-        elif raw_options.find("="):
-            options = dict([raw_options.split("=")])
-
-    return (host_list, db, username, password, collection, options)
-
-
 def _closed(sock):
     """Return True if we know socket has been closed, False otherwise.
     """
@@ -163,6 +68,20 @@ def _closed(sock):
         return len(rd) and sock.recv() == ""
     except:
         return True
+
+
+def _partition_node(node):
+    """Split a host:port string returned from mongod/s into
+    a (host, int(port)) pair needed for socket.connect().
+    """
+    host = node
+    port = 27017
+    idx = node.rfind(':')
+    if idx != -1:
+        host, port = node[:idx], int(node[idx + 1:])
+    if host.startswith('['):
+        host = host[1:-1]
+    return host, port
 
 
 class _Pool(threading.local):
@@ -178,14 +97,35 @@ class _Pool(threading.local):
     # thread-local default
     sock = None
 
-    def __init__(self, socket_factory, pool_size):
+    def __init__(self, pool_size, network_timeout):
         self.pid = os.getpid()
         self.pool_size = pool_size
-        self.socket_factory = socket_factory
+        self.network_timeout = network_timeout
         if not hasattr(self, "sockets"):
             self.sockets = []
 
-    def socket(self):
+    def connect(self, host, port):
+        """Connect to Mongo and return a new (connected) socket.
+        """
+        try:
+            # Prefer IPv4. If there is demand for an option
+            # to specify one or the other we can add it later.
+            s = socket.socket(socket.AF_INET)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.settimeout(self.network_timeout or _CONNECT_TIMEOUT)
+            s.connect((host, port))
+            s.settimeout(self.network_timeout)
+            return s
+        except socket.gaierror:
+            # If that fails try IPv6
+            s = socket.socket(socket.AF_INET6)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.settimeout(self.network_timeout or _CONNECT_TIMEOUT)
+            s.connect((host, port))
+            s.settimeout(self.network_timeout)
+            return s
+
+    def get_socket(self, host, port):
         # We use the pid here to avoid issues with fork / multiprocessing.
         # See test.test_connection:TestConnection.test_fork for an example of
         # what could go wrong otherwise
@@ -197,14 +137,15 @@ class _Pool(threading.local):
             self.pid = pid
 
         if self.sock is not None and self.sock[0] == pid:
-            return self.sock[1]
+            return (self.sock[1], True)
 
         try:
             self.sock = (pid, self.sockets.pop())
+            return (self.sock[1], True)
         except IndexError:
-            self.sock = (pid, self.socket_factory())
+            self.sock = (pid, self.connect(host, port))
+            return (self.sock[1], False)
 
-        return self.sock[1]
 
     def return_socket(self):
         if self.sock is not None and self.sock[0] == os.getpid():
@@ -218,7 +159,7 @@ class _Pool(threading.local):
         self.sock = None
 
 
-class Connection(object):  # TODO support auth for pooling
+class Connection(common.BaseObject):
     """Connection to MongoDB.
     """
 
@@ -228,8 +169,8 @@ class Connection(object):  # TODO support auth for pooling
     __max_bson_size = 4 * 1024 * 1024
 
     def __init__(self, host=None, port=None, max_pool_size=10,
-                 slave_okay=False, network_timeout=None,
-                 document_class=dict, tz_aware=False, _connect=True):
+                 network_timeout=None, document_class=dict,
+                 tz_aware=False, _connect=True, **kwargs):
         """Create a new connection to a single MongoDB instance at *host:port*.
 
         The resultant connection object has connection-pooling built
@@ -263,8 +204,6 @@ class Connection(object):  # TODO support auth for pooling
           - `port` (optional): port number on which to connect
           - `max_pool_size` (optional): The maximum size limit for
             the connection pool.
-          - `slave_okay` (optional): is it okay to connect directly to
-            and perform queries on a slave instance
           - `network_timeout` (optional): timeout (in seconds) to use
             for socket operations - default is no timeout
           - `document_class` (optional): default class to use for
@@ -274,8 +213,34 @@ class Connection(object):  # TODO support auth for pooling
             in a document by this :class:`Connection` will be timezone
             aware (otherwise they will be naive)
 
+          Other optional parameters can be passed as keyword arguments:
+
+          - `slave_okay` or `slaveok`: Is it OK to perform queries if
+            this connection is to a secondary?
+          - `safe`: Use getlasterror for each write operation?
+          - `j` or `journal`: Block until write operations have been commited
+            to the journal. Ignored if the server is running without journaling.
+            Implies safe=True.
+          - `w`: If this is a replica set the server won't return until
+            write operations have replicated to this many set members.
+            Implies safe=True.
+          - `wtimeout`: Used in conjunction with `j` and/or `w`. Wait this many
+            milliseconds for journal acknowledgement and/or write replication.
+            Implies safe=True.
+          - `fsync`: Force the database to fsync all files before returning
+            When used with `j` the server awaits the next group commit before
+            returning.
+            Implies safe=True.
+          - `replicaset`: The name of the replica set to connect to. The driver
+            will verify that the replica set it connects to matches this name.
+            Implies that the hosts specified are a seed list and the driver should
+            attempt to find all members of the set.
+
         .. seealso:: :meth:`end_request`
-        .. versionchanged:: 1.10.1+
+        .. versionchanged:: 2.0
+           `slave_okay` is a pure keyword argument. Added support for safe,
+           and getlasterror options as keyword arguments.
+        .. versionchanged:: 1.11
            Added `max_pool_size`. Completely removed previously deprecated
            `pool_size`, `auto_start_request` and `timeout` parameters.
         .. versionchanged:: 1.8
@@ -295,6 +260,8 @@ class Connection(object):  # TODO support auth for pooling
 
         .. mongodoc:: connections
         """
+        super(Connection, self).__init__(**kwargs)
+
         if host is None:
             host = self.HOST
         if isinstance(host, basestring):
@@ -305,73 +272,64 @@ class Connection(object):  # TODO support auth for pooling
             raise TypeError("port must be an instance of int")
 
         nodes = set()
-        database = None
         username = None
         password = None
-        collection = None
+        db = None
         options = {}
-        for uri in host:
-            (n, db, u, p, coll, opts) = _parse_uri(uri, port)
-            nodes.update(n)
-            database = db or database
-            username = u or username
-            password = p or password
-            collection = coll or collection
-            options = opts or options
+        for entity in host:
+            if "://" in entity:
+                if entity.startswith("mongodb://"):
+                    res = uri_parser.parse_uri(entity, port)
+                    nodes.update(res["nodelist"])
+                    username = res["username"] or username
+                    password = res["password"] or password
+                    db = res["database"] or db
+                    options = res["options"]
+                else:
+                    idx = entity.find("://")
+                    raise InvalidURI("Invalid URI scheme: "
+                                     "%s" % (entity[:idx],))
+            else:
+                nodes.update(uri_parser.split_hosts(entity, port))
         if not nodes:
             raise ConfigurationError("need to specify at least one host")
         self.__nodes = nodes
-        if database and username is None:
-            raise InvalidURI("cannot specify database without "
-                             "a username and password")
 
         self.__host = None
         self.__port = None
 
-        if "maxpoolsize" in options:
-            self.__max_pool_size = options['maxpoolsize']
-            if not self.__max_pool_size.isdigit():
-                raise TypeError("maxPoolSize must be an integer >= 0.")
-            self.__max_pool_size = int(self.__max_pool_size)
-        else:
-            self.__max_pool_size = max_pool_size
-            if not isinstance(self.__max_pool_size, int):
-                raise TypeError("max_pool_size must be an instance of int.")
+        if options:
+            super(Connection, self)._set_options(**options)
+
+        assert isinstance(max_pool_size, int), "max_pool_size must be an int"
+        self.__max_pool_size = options.get("maxpoolsize") or max_pool_size
         if self.__max_pool_size < 0:
             raise ValueError("the maximum pool size must be >= 0")
 
-        if "slaveok" in options:
-            self.__slave_okay = (options['slaveok'][0].upper() == 'T')
-        else:
-            self.__slave_okay = slave_okay
-
-        if slave_okay and len(self.__nodes) > 1:
-            raise ConfigurationError("cannot specify slave_okay for a paired "
-                                     "or replica set connection")
-
-        # TODO - Support using other options like w and fsync from URI
-        self.__options = options
-        # TODO - Support setting the collection from URI like the Java driver
-        self.__collection = collection
 
         self.__cursor_manager = CursorManager(self)
 
-        self.__pool = _Pool(self.__connect, self.__max_pool_size)
+        self.__repl = options.get('replicaset', kwargs.get('replicaset'))
+        self.__network_timeout = network_timeout
+        self.__pool = _Pool(self.__max_pool_size, self.__network_timeout)
         self.__last_checkout = time.time()
 
-        self.__network_timeout = network_timeout
         self.__document_class = document_class
         self.__tz_aware = tz_aware
 
         # cache of existing indexes used by ensure_index ops
         self.__index_cache = {}
+        self.__auth_credentials = {}
 
         if _connect:
-            self.__find_master()
+            self.__find_node()
 
+        if db and username is None:
+            warnings.warn("must provide a username and password "
+                          "to authenticate to %s" % (db,))
         if username:
-            database = database or "admin"
-            if not self[database].authenticate(username, password):
+            db = db or "admin"
+            if not self[db].authenticate(username, password):
                 raise ConfigurationError("authentication failed")
 
     @classmethod
@@ -456,6 +414,38 @@ class Connection(object):  # TODO support auth for pooling
         if index_name in self.__index_cache[database_name][collection_name]:
             del self.__index_cache[database_name][collection_name][index_name]
 
+    def _cache_credentials(self, db_name, username, password):
+        """Add credentials to the database authentication cache
+        for automatic login when a socket is created.
+
+        If credentials are already cached for `db_name` they
+        will be replaced.
+        """
+        self.__auth_credentials[db_name] = (username, password)
+
+    def _purge_credentials(self, db_name=None):
+        """Purge credentials from the database authentication cache.
+
+        If `db_name` is None purge credentials for all databases.
+        """
+        if db_name is None:
+            self.__auth_credentials.clear()
+        elif db_name in self.__auth_credentials:
+            del self.__auth_credentials[db_name]
+
+    def __authenticate_socket(self):
+        """Authenticate using cached database credentials.
+
+        If credentials for the 'admin' database are available only
+        this database is authenticated, since this gives global access.
+        """
+        if "admin" in self.__auth_credentials:
+            username, password = self.__auth_credentials["admin"]
+            self.admin.authenticate(username, password)
+        else:
+            for db_name, (u, p) in self.__auth_credentials.iteritems():
+                self[db_name].authenticate(u, p)
+
     @property
     def host(self):
         """Current connected host.
@@ -478,7 +468,7 @@ class Connection(object):  # TODO support auth for pooling
     def max_pool_size(self):
         """The maximum pool size limit set for this connection.
 
-        .. versionadded:: 1.10.1+
+        .. versionadded:: 1.11
         """
         return self.__max_pool_size
 
@@ -493,12 +483,6 @@ class Connection(object):  # TODO support auth for pooling
         .. versionadded:: 1.8
         """
         return self.__nodes
-
-    @property
-    def slave_okay(self):
-        """Is it okay for this connection to connect directly to a slave?
-        """
-        return self.__slave_okay
 
     def get_document_class(self):
         return self.__document_class
@@ -532,108 +516,92 @@ class Connection(object):  # TODO support auth for pooling
         """
         return self.__max_bson_size
 
-    def __add_hosts_and_get_primary(self, response):
-        if "hosts" in response:
-            self.__nodes.update([_str_to_node(h) for h in response["hosts"]])
-        if "primary" in response:
-            return _str_to_node(response["primary"])
-        return False
-
     def __try_node(self, node):
+        """Try to connect to this node and see if it works
+        for our connection type.
+
+        :Parameters:
+         - `node`: The (host, port) pair to try.
+        """
         self.disconnect()
         self.__host, self.__port = node
-        try:
-            response = self.admin.command("ismaster")
-            self.end_request()
+        response = self.admin.command("ismaster")
 
-            if "maxBsonObjectSize" in response:
-                self.__max_bson_size = response["maxBsonObjectSize"]
+        self.end_request()
 
-            # If __slave_okay is True and we've only been given one node
-            # assume this should be a direct connection and don't try to
-            # discover other nodes.
-            if len(self.__nodes) == 1 and self.__slave_okay:
-                if response["ismaster"]:
-                    return True
-                return False
+        if "maxBsonObjectSize" in response:
+            self.__max_bson_size = response["maxBsonObjectSize"]
 
-            primary = self.__add_hosts_and_get_primary(response)
+        # Replica Set?
+        if len(self.__nodes) > 1 or self.__repl:
+            # Check that this host is part of the given replica set.
+            if self.__repl:
+                set_name = response.get('setName')
+                # The 'setName' field isn't returned by mongod before 1.6.2
+                # so we can't assume that if it's missing this host isn't in
+                # the specified set.
+                if set_name and set_name != self.__repl:
+                    raise ConfigurationError("%s:%d is not a member of "
+                                             "replica set %s"
+                                             % (node[0], node[1], self.__repl))
+            if "hosts" in response:
+                self.__nodes.update([_partition_node(h)
+                                     for h in response["hosts"]])
             if response["ismaster"]:
-                return True
-            return primary
-        except:
-            self.end_request()
-            return None
+                return node
+            elif "primary" in response:
+                candidate = _partition_node(response["primary"])
+                return self.__try_node(candidate)
 
-    def __find_master(self):
-        """Create a new socket and use it to figure out who the master is.
+            # Explain why we aren't using this connection.
+            raise AutoReconnect('%s:%d is not primary or master' % node)
+
+        # Direct connection
+        if response.get("arbiterOnly", False):
+            raise ConfigurationError("%s:%d is an arbiter" % node)
+        return node
+
+    def __find_node(self):
+        """Find a host, port pair suitable for our connection type.
+
+        If only one host was supplied to __init__ see if we can connect
+        to it. Don't check if the host is a master/primary so we can make
+        a direct connection to read from a slave.
+
+        If more than one host was supplied treat them as a seed list for
+        connecting to a replica set. Try to find the primary and fail if
+        we can't. Possibly updates any replSet information on success.
+
+        If the list of hosts is not a seed list for a replica set the
+        behavior is still the same. We iterate through the list trying
+        to find a host we can send write operations to.
+
+        In either case a connection to an arbiter will never succeed.
 
         Sets __host and __port so that :attr:`host` and :attr:`port`
-        will return the address of the master. Also (possibly) updates
-        any replSet information.
+        will return the address of the connected host.
         """
-        # Special case the first node to try to get the primary or any
-        # additional hosts from a replSet:
-        first = iter(self.__nodes).next()
-
-        primary = self.__try_node(first)
-        if primary is True:
-            return first
-
-        # no network error
-        if self.__slave_okay and primary is not None:
-            return first
-
-        # Wasn't the first node, but we got a primary - let's try it:
-        tried = [first]
-        if primary:
-            if self.__try_node(primary) is True:
-                return primary
-            tried.append(primary)
-
-        nodes = self.__nodes - set(tried)
-
-        # Just scan
-        # TODO parallelize these to minimize connect time?
-        for node in nodes:
-            if self.__try_node(node) is True:
-                return node
-
-        # Clear the connection pool so we we don't try
-        # running queries against a secondary without slave_okay.
-        self.disconnect()
-        raise AutoReconnect("could not find master/primary")
-
-    def __connect(self):
-        """(Re-)connect to Mongo and return a new (connected) socket.
-
-        Connect to the master if this is a paired connection.
-        """
-        host, port = (self.__host, self.__port)
-        if host is None or port is None:
-            host, port = self.__find_master()
-
-        try:
+        errors = []
+        # self.__nodes may change size as we iterate.
+        seeds = self.__nodes.copy()
+        for candidate in seeds:
             try:
-                # Prefer IPv4. If there is demand for an option
-                # to specify one or the other we can add it later.
-                sock = socket.socket(socket.AF_INET)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(self.__network_timeout or _CONNECT_TIMEOUT)
-                sock.connect((host, port))
-                sock.settimeout(self.__network_timeout)
-                return sock
-            except socket.gaierror:
-                # If that fails try IPv6
-                sock = socket.socket(socket.AF_INET6)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(self.__network_timeout or _CONNECT_TIMEOUT)
-                sock.connect((host, port))
-                sock.settimeout(self.__network_timeout)
-                return sock
-        except socket.error:
-            self.disconnect()
-            raise AutoReconnect("could not connect to %r" % list(self.__nodes))
+                node = self.__try_node(candidate)
+                if node:
+                    return node
+            except Exception, why:
+                errors.append(str(why))
+        # Try any hosts we discovered that were not in the seed list.
+        for candidate in self.__nodes - seeds:
+            try:
+                node = self.__try_node(candidate)
+                if node:
+                    return node
+            except Exception, why:
+                errors.append(str(why))
+        # Couldn't find a suitable host.
+        self.disconnect()
+        raise AutoReconnect(', '.join(errors))
 
     def __socket(self):
         """Get a socket from the pool.
@@ -646,13 +614,24 @@ class Connection(object):  # TODO support auth for pooling
         the last socket checkout, to keep performance reasonable - we
         can't avoid those completely anyway.
         """
-        sock = self.__pool.socket()
+        host, port = (self.__host, self.__port)
+        if host is None or port is None:
+            host, port = self.__find_node()
+
+        try:
+            sock, from_pool = self.__pool.get_socket(host, port)
+        except socket.error, why:
+            self.disconnect()
+            raise AutoReconnect("could not connect to "
+                                "%s:%d: %s" % (host, port, str(why)))
         t = time.time()
         if t - self.__last_checkout > 1:
             if _closed(sock):
                 self.disconnect()
-                sock = self.__pool.socket()
+                sock, from_pool = self.__pool.get_socket(host, port)
         self.__last_checkout = t
+        if self.__auth_credentials and not from_pool:
+            self.__authenticate_socket()
         return sock
 
     def disconnect(self):
@@ -668,7 +647,7 @@ class Connection(object):  # TODO support auth for pooling
         .. seealso:: :meth:`end_request`
         .. versionadded:: 1.3
         """
-        self.__pool = _Pool(self.__connect, self.__max_pool_size)
+        self.__pool = _Pool(self.__max_pool_size, self.__network_timeout)
         self.__host = None
         self.__port = None
 
@@ -709,9 +688,9 @@ class Connection(object):  # TODO support auth for pooling
         # TODO unify logic with database.error method
         if error.get("err") is None:
             return error
-        if error["err"] == "not master":
+        if error["err"].startswith("not master"):
             self.disconnect()
-            raise AutoReconnect("not master")
+            raise AutoReconnect(error["err"])
 
         if "code" in error:
             if error["code"] in [11000, 11001, 12582]:
@@ -1008,6 +987,44 @@ class Connection(object):  # TODO support auth for pooling
             command["key"] = helpers._auth_key(nonce, username, password)
 
         return self.admin.command("copydb", **command)
+
+    @property
+    def is_locked(self):
+        """Is this server locked? While locked, all write operations
+        are blocked, although read operations may still be allowed.
+        Use :meth:`~pymongo.connection.Connection.unlock` to unlock.
+
+        .. versionadded:: 2.0
+        """
+        ops = self.admin.current_op()
+        return bool(ops.get('fsyncLock', 0))
+
+    def fsync(self, **kwargs):
+        """Flush all pending writes to datafiles.
+
+        :Parameters:
+
+            Optional parameters can be passed as keyword arguments:
+
+            - `lock`: If True lock the server to disallow writes.
+            - `async`: If True don't block while synchronizing.
+
+            .. warning:: `async` and `lock` can not be used together.
+
+            .. warning:: MongoDB does not support the `async` option
+                         on Windows and will raise an exception on that
+                         platform.
+
+        .. versionadded:: 2.0
+        """
+        self.admin.command("fsync", **kwargs)
+
+    def unlock(self):
+        """Unlock a previously locked server.
+
+        .. versionadded:: 2.0
+        """
+        self.admin['$cmd'].sys.unlock.find_one() 
 
     def __iter__(self):
         return self

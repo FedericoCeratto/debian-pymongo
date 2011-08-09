@@ -108,14 +108,14 @@ static PyObject* _cbson_insert_message(PyObject* self, PyObject* args) {
     char* collection_name = NULL;
     int collection_name_length;
     PyObject* docs;
+    PyObject* doc;
+    PyObject* iterator;
     int before, cur_size, max_size = 0;
-    int list_length;
-    int i;
     unsigned char check_keys;
     unsigned char safe;
     PyObject* last_error_args;
     buffer_t buffer;
-    int length_location;
+    int length_location, message_length;
     PyObject* result;
 
     if (!PyArg_ParseTuple(args, "et#ObbO",
@@ -156,27 +156,38 @@ static PyObject* _cbson_insert_message(PyObject* self, PyObject* args) {
 
     PyMem_Free(collection_name);
 
-    list_length = PyList_Size(docs);
-    if (list_length <= 0) {
+    iterator = PyObject_GetIter(docs);
+    if (iterator == NULL) {
+        PyObject* InvalidOperation = _error("InvalidOperation");
+        PyErr_SetString(InvalidOperation, "input is not iterable");
+        Py_DECREF(InvalidOperation);
+        buffer_free(buffer);
+        return NULL;
+    }
+    while ((doc = PyIter_Next(iterator)) != NULL) {
+        before = buffer_get_position(buffer);
+        if (!write_dict(buffer, doc, check_keys, 1)) {
+            Py_DECREF(doc);
+            Py_DECREF(iterator);
+            buffer_free(buffer);
+            return NULL;
+        }
+        Py_DECREF(doc);
+        cur_size = buffer_get_position(buffer) - before;
+        max_size = (cur_size > max_size) ? cur_size : max_size;
+    }
+    Py_DECREF(iterator);
+
+    if (!max_size) {
         PyObject* InvalidOperation = _error("InvalidOperation");
         PyErr_SetString(InvalidOperation, "cannot do an empty bulk insert");
         Py_DECREF(InvalidOperation);
         buffer_free(buffer);
         return NULL;
     }
-    for (i = 0; i < list_length; i++) {
-        PyObject* doc = PyList_GetItem(docs, i);
-        before = buffer_get_position(buffer);
-        if (!write_dict(buffer, doc, check_keys, 1)) {
-            buffer_free(buffer);
-            return NULL;
-        }
-        cur_size = buffer_get_position(buffer) - before;
-        max_size = (cur_size > max_size) ? cur_size : max_size;
-    }
 
-    memcpy(buffer_get_buffer(buffer) + length_location,
-           buffer_get_buffer(buffer) + buffer_get_position(buffer), 4);
+    message_length = buffer_get_position(buffer) - length_location;
+    memcpy(buffer_get_buffer(buffer) + length_location, &message_length, 4);
 
     if (safe) {
         if (!add_last_error(buffer, request_id, last_error_args)) {
@@ -208,7 +219,7 @@ static PyObject* _cbson_update_message(PyObject* self, PyObject* args) {
     PyObject* last_error_args;
     int options;
     buffer_t buffer;
-    int length_location;
+    int length_location, message_length;
     PyObject* result;
 
     if (!PyArg_ParseTuple(args, "et#bbOObO",
@@ -275,8 +286,8 @@ static PyObject* _cbson_update_message(PyObject* self, PyObject* args) {
 
     PyMem_Free(collection_name);
 
-    memcpy(buffer_get_buffer(buffer) + length_location,
-           buffer_get_buffer(buffer) + buffer_get_position(buffer), 4);
+    message_length = buffer_get_position(buffer) - length_location;
+    memcpy(buffer_get_buffer(buffer) + length_location, &message_length, 4);
 
     if (safe) {
         if (!add_last_error(buffer, request_id, last_error_args)) {
@@ -306,7 +317,7 @@ static PyObject* _cbson_query_message(PyObject* self, PyObject* args) {
     PyObject* query;
     PyObject* field_selector = Py_None;
     buffer_t buffer;
-    int length_location;
+    int length_location, message_length;
     PyObject* result;
 
     if (!PyArg_ParseTuple(args, "Iet#iiO|O",
@@ -365,8 +376,8 @@ static PyObject* _cbson_query_message(PyObject* self, PyObject* args) {
 
     PyMem_Free(collection_name);
 
-    memcpy(buffer_get_buffer(buffer) + length_location,
-           buffer_get_buffer(buffer) + buffer_get_position(buffer), 4);
+    message_length = buffer_get_position(buffer) - length_location;
+    memcpy(buffer_get_buffer(buffer) + length_location, &message_length, 4);
 
     /* objectify buffer */
     result = Py_BuildValue("is#i", request_id,
@@ -385,7 +396,7 @@ static PyObject* _cbson_get_more_message(PyObject* self, PyObject* args) {
     int num_to_return;
     long long cursor_id;
     buffer_t buffer;
-    int length_location;
+    int length_location, message_length;
     PyObject* result;
 
     if (!PyArg_ParseTuple(args, "et#iL",
@@ -427,8 +438,8 @@ static PyObject* _cbson_get_more_message(PyObject* self, PyObject* args) {
 
     PyMem_Free(collection_name);
 
-    memcpy(buffer_get_buffer(buffer) + length_location,
-           buffer_get_buffer(buffer) + buffer_get_position(buffer), 4);
+    message_length = buffer_get_position(buffer) - length_location;
+    memcpy(buffer_get_buffer(buffer) + length_location, &message_length, 4);
 
     /* objectify buffer */
     result = Py_BuildValue("is#", request_id,
@@ -453,16 +464,14 @@ static PyMethodDef _CMessageMethods[] = {
 PyMODINIT_FUNC init_cmessage(void) {
     PyObject *m;
 
-    /* TODO is this necessary?
-     *
-     * We import _cbson here to make sure that it's init function has
-     * been run.
+    /* This is a hack. There doesn't seem to be a good
+     * way to initialize the required Python objects in _cbson.
      */
-    m = PyImport_ImportModule("bson._cbson");
-    Py_DECREF(m);
+    init_cbson();
 
     m = Py_InitModule("_cmessage", _CMessageMethods);
     if (m == NULL) {
         return;
+
     }
 }
