@@ -1,6 +1,19 @@
 Changelog
 =========
 
+Changes in Version 2.0.1
+------------------------
+
+Version 2.0.1 fixes a regression in :class:`~gridfs.grid_file.GridIn` when
+writing pre-chunked strings. Thanks go to Alexey Borzenkov for reporting the
+issue and submitting a patch.
+
+Issues Resolved
+...............
+
+- `PYTHON-271 <https://jira.mongodb.org/browse/PYTHON-271>`_:
+  Regression in GridFS leads to serious loss of data.
+
 Changes in Version 2.0
 ----------------------
 
@@ -45,6 +58,10 @@ API changes:
 - If more than one host:port pair is specified or the `replicaset` option is
   used PyMongo will treat the specified host:port pair(s) as a seed list and
   connect using replica set behavior.
+
+.. warning:: The default subtype for :class:`~bson.binary.Binary` has changed
+             from :const:`~bson.binary.OLD_BINARY_SUBTYPE` (2) to
+             :const:`~bson.binary.BINARY_SUBTYPE` (0).
 
 Issues Resolved
 ...............
