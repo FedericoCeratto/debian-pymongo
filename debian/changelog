@@ -1,3 +1,11 @@
+pymongo (2.1-1) unstable; urgency=low
+
+  * New upstream release.
+  * Add libjs-underscore dependency to python-pymongo-doc.
+  * Use unversioned copyright format uri in debian/changelog.
+
+ -- Janos Guljas <janos@resenje.org>  Sun, 11 Dec 2011 02:05:08 +0100
+
 pymongo (2.0.1-1) unstable; urgency=low
 
   * New upstream release, http://api.mongodb.org/python/2.0.1/changelog.html
