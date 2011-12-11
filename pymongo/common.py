@@ -14,7 +14,9 @@
 
 
 """Functions and classes common to multiple pymongo modules."""
+import warnings
 
+from pymongo import ReadPreference
 from pymongo.errors import ConfigurationError
 
 
@@ -38,7 +40,7 @@ def validate_boolean(option, value):
 
 
 def validate_integer(option, value):
-    """Validates that 'value' is an integer.
+    """Validates that 'value' is an integer (or basestring representation).
     """
     if isinstance(value, (int, long)):
         return value
@@ -47,7 +49,7 @@ def validate_integer(option, value):
             raise ConfigurationError("The value of '%s' must be "
                                      "an integer." % (option,))
         return int(value)
-    raise TypeError("Wrong type for %s, value just be an "
+    raise TypeError("Wrong type for %s, value must be an "
                     "integer or string representation" % (option,))
 
 
@@ -56,30 +58,75 @@ def validate_basestring(option, value):
     """
     if isinstance(value, basestring):
         return value
-    raise TypeError("Wrong type for %s, value just be an "
+    raise TypeError("Wrong type for %s, value must be an "
                     "instance of basestring" % (option,))
+
+
+def validate_int_or_basestring(option, value):
+    """Validates that 'value' is an integer or string.
+    """
+    if isinstance(value, (int, long)):
+        return value
+    elif isinstance(value, basestring):
+        if value.isdigit():
+            return int(value)
+        return value
+    raise TypeError("Wrong type for %s, value must be an "
+                    "integer or a string" % (option,))
+
+
+def validate_timeout_or_none(option, value):
+    """Validates a timeout specified in milliseconds returning
+    a value in floating point seconds.
+    """
+    if value is None:
+        return value
+    try:
+        value = float(value)
+    except (ValueError, TypeError):
+        raise ConfigurationError("%s must be an instance of int, float, "
+                                 "or a string representation" % (option,))
+    if value <= 0:
+        raise ConfigurationError("%s must be a positive integer" % (option,))
+    return value / 1000.0
+
+
+def validate_read_preference(dummy, value):
+    """Validate read preference for a ReplicaSetConnection.
+    """
+    if value not in range(ReadPreference.PRIMARY,
+                          ReadPreference.SECONDARY_ONLY + 1):
+        raise ConfigurationError("Not a valid read preference")
+    return value
 
 
 # jounal is an alias for j,
 # wtimeoutms is an alias for wtimeout
-VALIDATORS = { 
+VALIDATORS = {
     'replicaset': validate_basestring,
     'slaveok': validate_boolean,
+    'slave_okay': validate_boolean,
     'safe': validate_boolean,
-    'w': validate_integer,
+    'w': validate_int_or_basestring,
     'wtimeout': validate_integer,
     'wtimeoutms': validate_integer,
     'fsync': validate_boolean,
     'j': validate_boolean,
     'journal': validate_boolean,
-    'maxpoolsize': validate_integer,
+    'connecttimeoutms': validate_timeout_or_none,
+    'sockettimeoutms': validate_timeout_or_none,
+    'ssl': validate_boolean,
+    'read_preference': validate_read_preference,
 }
 
 
-UNSUPPORTED = frozenset([
-    'connecttimeoutms',
-    'sockettimeoutms'
-])
+def validate(option, value):
+    """Generic validation function.
+    """
+    lower = option.lower()
+    validator = VALIDATORS.get(lower, raise_config_error)
+    value = validator(option, value)
+    return lower, value
 
 
 SAFE_OPTIONS = frozenset([
@@ -102,29 +149,32 @@ class BaseObject(object):
     def __init__(self, **options):
 
         self.__slave_okay = False
+        self.__read_pref = ReadPreference.PRIMARY
         self.__safe = False
         self.__safe_opts = {}
+        self.__set_options(options)
 
-        self._set_options(**options)
-
-    def __set_safe_option(self, option, value):
+    def __set_safe_option(self, option, value, check=False):
         """Validates and sets getlasterror options for this
         object (Connection, Database, Collection, etc.)
         """
         if value is None:
             self.__safe_opts.pop(option, None)
         else:
-            validate = VALIDATORS.get(option, raise_config_error)
-            self.__safe_opts[option] = validate(option, value)
+            if check:
+                option, value = validate(option, value)
+            self.__safe_opts[option] = value
             self.__safe = True
 
-    def _set_options(self, **options):
+    def __set_options(self, options):
         """Validates and sets all options passed to this object."""
         for option, value in options.iteritems():
             if option in ('slave_okay', 'slaveok'):
-                self.slave_okay = value
+                self.__slave_okay = validate_boolean(option, value)
+            elif option == 'read_preference':
+                self.__read_pref = validate_read_preference(option, value)
             elif option == 'safe':
-                self.safe = value
+                self.__safe = validate_boolean(option, value)
             elif option in SAFE_OPTIONS:
                 if option == 'journal':
                     self.__set_safe_option('j', value)
@@ -134,17 +184,35 @@ class BaseObject(object):
                     self.__set_safe_option(option, value)
 
     def __get_slave_okay(self):
-        """Is it OK to perform queries on a secondary or slave?
+        """DEPRECATED. Use `read_preference` instead.
 
+        .. versionchanged:: 2.0.1+
         .. versionadded:: 2.0
         """
         return self.__slave_okay
 
     def __set_slave_okay(self, value):
         """Property setter for slave_okay"""
+        warnings.warn("slave_okay is deprecated. Please use "
+                      "read_preference instead.", DeprecationWarning)
         self.__slave_okay = validate_boolean('slave_okay', value)
 
     slave_okay = property(__get_slave_okay, __set_slave_okay)
+
+    def __get_read_pref(self):
+        """The read preference for this instance.
+
+        See :class:`~pymongo.ReadPreference` for available options.
+
+        .. versionadded:: 2.0.1+
+        """
+        return self.__read_pref
+
+    def __set_read_pref(self, value):
+        """Property setter for read_preference"""
+        self.__read_pref = validate_read_preference('read_preference', value)
+
+    read_preference = property(__get_read_pref, __set_read_pref)
 
     def __get_safe(self):
         """Use getlasterrer with every write operation?
@@ -180,14 +248,14 @@ class BaseObject(object):
         .. versionadded:: 2.0
         """
         for key, value in kwargs.iteritems():
-            self.__set_safe_option(key, value)
+            self.__set_safe_option(key, value, check=True)
 
     def unset_lasterror_options(self, *options):
         """Unset getlasterror options for this instance.
 
         If no options are passed unsets all getlasterror options.
         This does not set `safe` to False.
-        
+
         :Parameters:
             - `*options`: The list of options to unset.
 
@@ -198,4 +266,3 @@ class BaseObject(object):
                 self.__safe_opts.pop(option, None)
         else:
             self.__safe_opts = {}
-

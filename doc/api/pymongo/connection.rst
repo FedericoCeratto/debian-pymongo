@@ -9,6 +9,7 @@
       .. automethod:: from_uri([uri='mongodb://localhost'])
       .. automethod:: paired(left[, right=('localhost', 27017)])
       .. automethod:: disconnect
+      .. automethod:: close
 
       .. describe:: c[db_name] || c.db_name
 
@@ -22,6 +23,7 @@
       .. autoattribute:: max_pool_size
       .. autoattribute:: document_class
       .. autoattribute:: tz_aware
+      .. autoattribute:: read_preference
       .. autoattribute:: slave_okay
       .. autoattribute:: safe
       .. autoattribute:: is_locked

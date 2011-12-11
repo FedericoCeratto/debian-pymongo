@@ -16,13 +16,14 @@
 
 import warnings
 
+from bson.binary import OLD_UUID_SUBTYPE, UUID_SUBTYPE
 from bson.code import Code
 from bson.son import SON
 from pymongo import (common,
                      helpers,
                      message)
 from pymongo.cursor import Cursor
-from pymongo.errors import InvalidName, InvalidOperation
+from pymongo.errors import ConfigurationError, InvalidName, InvalidOperation
 
 _ZERO = "\x00\x00\x00\x00"
 
@@ -69,9 +70,11 @@ class Collection(common.BaseObject):
 
         .. mongodoc:: collections
         """
-        super(Collection, self).__init__(slave_okay=database.slave_okay,
-                                         safe=database.safe,
-                                         **(database.get_lasterror_options()))
+        super(Collection,
+              self).__init__(slave_okay=database.slave_okay,
+                             read_preference=database.read_preference,
+                             safe=database.safe,
+                             **(database.get_lasterror_options()))
 
         if not isinstance(name, basestring):
             raise TypeError("name must be an instance of basestring")
@@ -101,6 +104,7 @@ class Collection(common.BaseObject):
 
         self.__database = database
         self.__name = unicode(name)
+        self.__uuid_subtype = OLD_UUID_SUBTYPE
         self.__full_name = u"%s.%s" % (self.__database.name, self.__name)
         if create or options is not None:
             self.__create(options)
@@ -170,6 +174,18 @@ class Collection(common.BaseObject):
         """
         return self.__database
 
+    def __get_uuid_subtype(self):
+        return self.__uuid_subtype
+
+    def __set_uuid_subtype(self, subtype):
+        if subtype not in (OLD_UUID_SUBTYPE, UUID_SUBTYPE):
+            raise ConfigurationError("Not a valid binary subtype for a UUID.")
+        self.__uuid_subtype = subtype
+
+    uuid_subtype = property(__get_uuid_subtype, __set_uuid_subtype,
+                            doc="""The BSON binary subtype for
+                            a UUID used for this collection.""")
+
     def save(self, to_save, manipulate=True, safe=False, **kwargs):
         """Save a document in this collection.
 
@@ -216,11 +232,11 @@ class Collection(common.BaseObject):
             return self.insert(to_save, manipulate, safe, **kwargs)
         else:
             self.update({"_id": to_save["_id"]}, to_save, True,
-                        manipulate, safe, **kwargs)
+                        manipulate, safe, _check_keys=True, **kwargs)
             return to_save.get("_id", None)
 
-    def insert(self, doc_or_docs,
-               manipulate=True, safe=False, check_keys=True, **kwargs):
+    def insert(self, doc_or_docs, manipulate=True,
+               safe=False, check_keys=True, continue_on_error=False, **kwargs):
         """Insert a document(s) into this collection.
 
         If `manipulate` is ``True``, the document(s) are manipulated using
@@ -252,10 +268,20 @@ class Collection(common.BaseObject):
           - `check_keys` (optional): check if keys start with '$' or
             contain '.', raising :class:`~pymongo.errors.InvalidName`
             in either case
+          - `continue_on_error` (optional): If True, the database will not stop
+            processing a bulk insert if one fails (e.g. due to duplicate IDs).
+            This makes bulk insert behave similarly to a series of single
+            inserts, except lastError will be set if any insert fails, not just
+            the last one. If multiple errors occur, only the most recent will
+            be reported by :meth:`~pymongo.database.Database.error`.
           - `**kwargs` (optional): any additional arguments imply
             ``safe=True``, and will be used as options for the
             `getLastError` command
 
+        .. note:: `continue_on_error` requires server version **>= 1.9.1**
+
+        .. versionadded:: 2.0.1+
+           Support for continue_on_error.
         .. versionadded:: 1.8
            Support for passing `getLastError` options as keyword
            arguments.
@@ -280,13 +306,14 @@ class Collection(common.BaseObject):
 
         self.__database.connection._send_message(
             message.insert(self.__full_name, docs,
-                           check_keys, safe, kwargs), safe)
+                           check_keys, safe, kwargs,
+                           continue_on_error, self.__uuid_subtype), safe)
 
         ids = [doc.get("_id", None) for doc in docs]
         return return_one and ids[0] or ids
 
     def update(self, spec, document, upsert=False, manipulate=False,
-               safe=False, multi=False, **kwargs):
+               safe=False, multi=False, _check_keys=False, **kwargs):
         """Update a document(s) in this collection.
 
         Raises :class:`TypeError` if either `spec` or `document` is
@@ -373,9 +400,13 @@ class Collection(common.BaseObject):
             if not kwargs:
                 kwargs.update(self.get_lasterror_options())
 
+        # _check_keys is used by save() so we don't upsert pre-existing
+        # documents after adding an invalid key like 'a.b'. It can't really
+        # be used for any other update operations.
         return self.__database.connection._send_message(
             message.update(self.__full_name, upsert, multi,
-                           spec, document, safe, kwargs), safe)
+                           spec, document, safe, kwargs,
+                           _check_keys, self.__uuid_subtype), safe)
 
     def drop(self):
         """Alias for :meth:`~pymongo.database.Database.drop_collection`.
@@ -450,7 +481,8 @@ class Collection(common.BaseObject):
                 kwargs.update(self.get_lasterror_options())
 
         return self.__database.connection._send_message(
-            message.delete(self.__full_name, spec_or_id, safe, kwargs), safe)
+            message.delete(self.__full_name, spec_or_id,
+                           safe, kwargs, self.__uuid_subtype), safe)
 
     def find_one(self, spec_or_id=None, *args, **kwargs):
         """Get a single document from the database.
@@ -556,6 +588,8 @@ class Collection(common.BaseObject):
           - `network_timeout` (optional): specify a timeout to use for
             this query, which will override the
             :class:`~pymongo.connection.Connection`-level default
+          - `read_preference` (optional): The read preference for
+            this read operation. Only used with ReplicaSetConnection.
 
         .. note:: The `manipulate` parameter may default to False in
            a future release.
@@ -581,8 +615,10 @@ class Collection(common.BaseObject):
 
         .. mongodoc:: find
         """
-        if not 'slave_okay' in kwargs and self.slave_okay:
-            kwargs['slave_okay'] = True
+        if not 'slave_okay' in kwargs:
+            kwargs['slave_okay'] = self.slave_okay
+        if not 'read_preference' in kwargs:
+            kwargs['read_preference'] = self.read_preference
         return Cursor(self, *args, **kwargs)
 
     def count(self):
@@ -621,6 +657,7 @@ class Collection(common.BaseObject):
             given, a name will be generated
           - `unique`: should this index guarantee uniqueness?
           - `dropDups` or `drop_dups`: should we drop duplicates
+          - `bucketSize` or `bucket_size`: size of buckets for geoHaystack indexes
             during index creation when creating a unique index?
           - `min`: minimum value for keys in a :data:`~pymongo.GEO2D`
             index
@@ -665,6 +702,9 @@ class Collection(common.BaseObject):
 
         if "drop_dups" in kwargs:
             kwargs["dropDups"] = kwargs.pop("drop_dups")
+
+        if "bucket_size" in kwargs:
+            kwargs["bucketSize"] = kwargs.pop("bucket_size")
 
         index.update(kwargs)
 
@@ -745,8 +785,8 @@ class Collection(common.BaseObject):
             keys = helpers._index_list(key_or_list)
             name = kwargs["name"] = _gen_index_name(keys)
 
-        if self.__database.connection._cache_index(self.__database.name,
-                                                   self.__name, name, ttl):
+        if not self.__database.connection._cached(self.__database.name,
+                                                  self.__name, name):
             return self.create_index(key_or_list, deprecated_unique,
                                      ttl, **kwargs)
         return None
@@ -871,6 +911,13 @@ class Collection(common.BaseObject):
             containing a JavaScript function to be applied to each
             document, returning the key to group by.
 
+        With :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+        or :class:`~pymongo.master_slave_connection.MasterSlaveConnection`,
+        if the `read_preference` attribute of this instance is not set to
+        :attr:`pymongo.ReadPreference.PRIMARY` or the (deprecated)
+        `slave_okay` attribute of this instance is set to `True` the group
+        command will be sent to a secondary or slave.
+
         :Parameters:
           - `key`: fields to group by (see above description)
           - `condition`: specification of rows to be
@@ -905,7 +952,11 @@ class Collection(common.BaseObject):
         if finalize is not None:
             group["finalize"] = Code(finalize)
 
-        return self.__database.command("group", group)["retval"]
+        use_master = not self.slave_okay and not self.read_preference
+
+        return self.__database.command("group", group,
+                                       uuid_subtype=self.__uuid_subtype,
+                                       _use_master=use_master)["retval"]
 
     def rename(self, new_name, **kwargs):
         """Rename this collection.
@@ -1029,6 +1080,7 @@ class Collection(common.BaseObject):
             raise TypeError("'out' must be an instance of basestring or dict")
 
         response = self.__database.command("mapreduce", self.__name,
+                                           uuid_subtype=self.__uuid_subtype,
                                            map=map, reduce=reduce,
                                            out=out_conf, **kwargs)
 
@@ -1069,6 +1121,7 @@ class Collection(common.BaseObject):
         """
 
         response = self.__database.command("mapreduce", self.__name,
+                                           uuid_subtype=self.__uuid_subtype,
                                            map=map, reduce=reduce,
                                            out={"inline": 1}, **kwargs)
 
@@ -1128,7 +1181,9 @@ class Collection(common.BaseObject):
         no_obj_error = "No matching object found"
 
         out = self.__database.command("findAndModify", self.__name,
-                allowable_errors=[no_obj_error], **kwargs)
+                                      allowable_errors=[no_obj_error],
+                                      uuid_subtype=self.__uuid_subtype,
+                                      **kwargs)
 
         if not out['ok']:
             if out["errmsg"] == no_obj_error:

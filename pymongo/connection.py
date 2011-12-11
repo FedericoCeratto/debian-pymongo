@@ -35,9 +35,9 @@ access:
 
 import datetime
 import os
-import select
 import socket
 import struct
+import sys
 import threading
 import time
 import warnings
@@ -56,18 +56,26 @@ from pymongo.errors import (AutoReconnect,
                             InvalidURI,
                             OperationFailure)
 
+if sys.platform.startswith('java'):
+    from select import cpython_compatible_select as select
+else:
+    from select import select
 
-_CONNECT_TIMEOUT = 20.0
-
+have_ssl = True
+try:
+    import ssl
+except ImportError:
+    have_ssl = False
 
 def _closed(sock):
     """Return True if we know socket has been closed, False otherwise.
     """
-    rd, _, _ = select.select([sock], [], [], 0)
     try:
-        return len(rd) and sock.recv() == ""
+        rd, _, _ = select([sock], [], [], 0)
+    # Any exception here is equally bad (select.error, ValueError, etc.).
     except:
         return True
+    return len(rd) > 0
 
 
 def _partition_node(node):
@@ -92,15 +100,18 @@ class _Pool(threading.local):
     """
 
     # Non thread-locals
-    __slots__ = ["sockets", "socket_factory", "pool_size", "pid"]
+    __slots__ = ["pid", "max_size", "net_timeout",
+                 "conn_timeout", "use_ssl", "sockets"]
 
     # thread-local default
     sock = None
 
-    def __init__(self, pool_size, network_timeout):
+    def __init__(self, max_size, net_timeout, conn_timeout, use_ssl):
         self.pid = os.getpid()
-        self.pool_size = pool_size
-        self.network_timeout = network_timeout
+        self.max_size = max_size
+        self.net_timeout = net_timeout
+        self.conn_timeout = conn_timeout
+        self.use_ssl = use_ssl
         if not hasattr(self, "sockets"):
             self.sockets = []
 
@@ -112,18 +123,26 @@ class _Pool(threading.local):
             # to specify one or the other we can add it later.
             s = socket.socket(socket.AF_INET)
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(self.network_timeout or _CONNECT_TIMEOUT)
+            s.settimeout(self.conn_timeout or 20.0)
             s.connect((host, port))
-            s.settimeout(self.network_timeout)
-            return s
         except socket.gaierror:
             # If that fails try IPv6
             s = socket.socket(socket.AF_INET6)
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(self.network_timeout or _CONNECT_TIMEOUT)
+            s.settimeout(self.conn_timeout or 20.0)
             s.connect((host, port))
-            s.settimeout(self.network_timeout)
-            return s
+
+        if self.use_ssl:
+            try:
+                s = ssl.wrap_socket(s)
+            except ssl.SSLError:
+                s.close()
+                raise ConnectionFailure("SSL handshake failed. MongoDB may "
+                                        "not be configured with SSL support.")
+
+        s.settimeout(self.net_timeout)
+
+        return s
 
     def get_socket(self, host, port):
         # We use the pid here to avoid issues with fork / multiprocessing.
@@ -152,7 +171,7 @@ class _Pool(threading.local):
             # There's a race condition here, but we deliberately
             # ignore it.  It means that if the pool_size is 10 we
             # might actually keep slightly more than that.
-            if len(self.sockets) < self.pool_size:
+            if len(self.sockets) < self.max_size:
                 self.sockets.append(self.sock[1])
             else:
                 self.sock[1].close()
@@ -215,14 +234,13 @@ class Connection(common.BaseObject):
 
           Other optional parameters can be passed as keyword arguments:
 
-          - `slave_okay` or `slaveok`: Is it OK to perform queries if
-            this connection is to a secondary?
           - `safe`: Use getlasterror for each write operation?
           - `j` or `journal`: Block until write operations have been commited
             to the journal. Ignored if the server is running without journaling.
             Implies safe=True.
-          - `w`: If this is a replica set the server won't return until
-            write operations have replicated to this many set members.
+          - `w`: (integer or string) If this is a replica set write operations
+            won't return until they have been replicated to the specified
+            number or tagged set of servers.
             Implies safe=True.
           - `wtimeout`: Used in conjunction with `j` and/or `w`. Wait this many
             milliseconds for journal acknowledgement and/or write replication.
@@ -231,12 +249,25 @@ class Connection(common.BaseObject):
             When used with `j` the server awaits the next group commit before
             returning.
             Implies safe=True.
-          - `replicaset`: The name of the replica set to connect to. The driver
+          - `replicaSet`: The name of the replica set to connect to. The driver
             will verify that the replica set it connects to matches this name.
             Implies that the hosts specified are a seed list and the driver should
             attempt to find all members of the set.
+          - `socketTimeoutMS`: How long a send or receive on a socket can take
+            before timing out.
+          - `connectTimeoutMS`: How long a connection can take to be opened
+            before timing out.
+          - `ssl`: If True, create the connection to the server using SSL.
+          - `read_preference`: The read preference for this connection.
+            See :class:`~pymongo.ReadPreference` for available options.
+          - `slave_okay` or `slaveOk` (deprecated): Use `read_preference`
+            instead.
 
         .. seealso:: :meth:`end_request`
+        .. versionchanged:: 2.0.1+
+           Support `w` = integer or string.
+           Added `ssl` option.
+           DEPRECATED slave_okay/slaveOk.
         .. versionchanged:: 2.0
            `slave_okay` is a pure keyword argument. Added support for safe,
            and getlasterror options as keyword arguments.
@@ -252,16 +283,11 @@ class Connection(common.BaseObject):
            The `tz_aware` parameter.
         .. versionadded:: 1.7
            The `document_class` parameter.
-        .. versionchanged:: 1.4
-           DEPRECATED The `pool_size`, `auto_start_request`, and `timeout`
-           parameters.
         .. versionadded:: 1.1
            The `network_timeout` parameter.
 
         .. mongodoc:: connections
         """
-        super(Connection, self).__init__(**kwargs)
-
         if host is None:
             host = self.HOST
         if isinstance(host, basestring):
@@ -293,25 +319,44 @@ class Connection(common.BaseObject):
                 nodes.update(uri_parser.split_hosts(entity, port))
         if not nodes:
             raise ConfigurationError("need to specify at least one host")
-        self.__nodes = nodes
 
+        self.__nodes = nodes
         self.__host = None
         self.__port = None
 
-        if options:
-            super(Connection, self)._set_options(**options)
+        for option, value in kwargs.iteritems():
+            option, value = common.validate(option, value)
+            options[option] = value
 
-        assert isinstance(max_pool_size, int), "max_pool_size must be an int"
-        self.__max_pool_size = options.get("maxpoolsize") or max_pool_size
-        if self.__max_pool_size < 0:
-            raise ValueError("the maximum pool size must be >= 0")
-
+        if not isinstance(max_pool_size, int):
+            raise ConfigurationError("max_pool_size must be an integer")
+        if max_pool_size < 0:
+            raise ValueError("max_pool_size must be >= 0")
+        self.__max_pool_size = max_pool_size
 
         self.__cursor_manager = CursorManager(self)
 
-        self.__repl = options.get('replicaset', kwargs.get('replicaset'))
-        self.__network_timeout = network_timeout
-        self.__pool = _Pool(self.__max_pool_size, self.__network_timeout)
+        self.__repl = options.get('replicaset')
+
+        if network_timeout is not None:
+            if (not isinstance(network_timeout, (int, float)) or
+                network_timeout <= 0):
+                raise ConfigurationError("network_timeout must "
+                                         "be a positive integer")
+        self.__net_timeout = (network_timeout or
+                              options.get('sockettimeoutms'))
+        self.__conn_timeout = options.get('connecttimeoutms')
+        self.__use_ssl = options.get('ssl', False)
+        if self.__use_ssl and not have_ssl:
+            raise ConfigurationError("The ssl module is not available. If you "
+                                     "are using a python version previous to "
+                                     "2.6 you must install the ssl package "
+                                     "from PyPI.")
+        self.__pool = _Pool(self.__max_pool_size,
+                            self.__net_timeout,
+                            self.__conn_timeout,
+                            self.__use_ssl)
+
         self.__last_checkout = time.time()
 
         self.__document_class = document_class
@@ -320,6 +365,11 @@ class Connection(common.BaseObject):
         # cache of existing indexes used by ensure_index ops
         self.__index_cache = {}
         self.__auth_credentials = {}
+
+        super(Connection, self).__init__(**options)
+        if self.slave_okay:
+            warnings.warn("slave_okay is deprecated. Please "
+                          "use read_preference instead.", DeprecationWarning)
 
         if _connect:
             self.__find_node()
@@ -360,13 +410,18 @@ class Connection(common.BaseObject):
         return cls([":".join(map(str, left)), ":".join(map(str, right))],
                    **connection_args)
 
+    def _cached(self, dbname, coll, index):
+        """Test if `index` is cached.
+        """
+        cache = self.__index_cache
+        now = datetime.datetime.utcnow()
+        return (dbname in cache and
+                coll in cache[dbname] and
+                index in cache[dbname][coll] and
+                now < cache[dbname][coll][index])
+
     def _cache_index(self, database, collection, index, ttl):
         """Add an index to the index cache for ensure_index operations.
-
-        Return ``True`` if the index has been newly cached or if the index had
-        expired and is being re-cached.
-
-        Return ``False`` if the index exists and is valid.
         """
         now = datetime.datetime.utcnow()
         expire = datetime.timedelta(seconds=ttl) + now
@@ -375,19 +430,13 @@ class Connection(common.BaseObject):
             self.__index_cache[database] = {}
             self.__index_cache[database][collection] = {}
             self.__index_cache[database][collection][index] = expire
-            return True
 
-        if collection not in self.__index_cache[database]:
+        elif collection not in self.__index_cache[database]:
             self.__index_cache[database][collection] = {}
             self.__index_cache[database][collection][index] = expire
-            return True
 
-        if index in self.__index_cache[database][collection]:
-            if now < self.__index_cache[database][collection][index]:
-                return False
-
-        self.__index_cache[database][collection][index] = expire
-        return True
+        else:
+            self.__index_cache[database][collection][index] = expire
 
     def _purge_index(self, database_name,
                      collection_name=None, index_name=None):
@@ -647,9 +696,27 @@ class Connection(common.BaseObject):
         .. seealso:: :meth:`end_request`
         .. versionadded:: 1.3
         """
-        self.__pool = _Pool(self.__max_pool_size, self.__network_timeout)
+        self.__pool = _Pool(self.__max_pool_size,
+                            self.__net_timeout,
+                            self.__conn_timeout,
+                            self.__use_ssl)
         self.__host = None
         self.__port = None
+
+    def close(self):
+        """Alias for :meth:`disconnect`
+
+        Disconnecting will close all underlying sockets in the
+        connection pool. If the :class:`Connection` is used again it
+        will be automatically re-opened. Care should be taken to make
+        sure that :meth:`disconnect` is not called in the middle of a
+        sequence of operations in which ordering is important. This
+        could lead to unexpected results.
+
+        .. seealso:: :meth:`end_request`
+        .. versionadded:: 2.0.1+
+        """
+        self.disconnect()
 
     def set_cursor_manager(self, manager_class):
         """Set this connection's cursor manager.
@@ -685,12 +752,12 @@ class Connection(common.BaseObject):
 
         helpers._check_command_response(error, self.disconnect)
 
-        # TODO unify logic with database.error method
-        if error.get("err") is None:
+        error_msg = error.get("err", "")
+        if error_msg is None:
             return error
-        if error["err"].startswith("not master"):
+        if error_msg.startswith("not master"):
             self.disconnect()
-            raise AutoReconnect(error["err"])
+            raise AutoReconnect(error_msg)
 
         if "code" in error:
             if error["code"] in [11000, 11001, 12582]:
@@ -810,7 +877,7 @@ class Connection(common.BaseObject):
                 raise AutoReconnect(str(e))
         finally:
             if "network_timeout" in kwargs:
-                sock.settimeout(self.__network_timeout)
+                sock.settimeout(self.__net_timeout)
 
     def start_request(self):
         """DEPRECATED all operations will start a request.
@@ -1025,6 +1092,12 @@ class Connection(common.BaseObject):
         .. versionadded:: 2.0
         """
         self.admin['$cmd'].sys.unlock.find_one() 
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
 
     def __iter__(self):
         return self

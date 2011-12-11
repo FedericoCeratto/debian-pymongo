@@ -8,9 +8,14 @@
    .. autodata:: FUNCTION_SUBTYPE
    .. autodata:: OLD_BINARY_SUBTYPE
    .. autodata:: UUID_SUBTYPE
+   .. autodata:: OLD_UUID_SUBTYPE
    .. autodata:: MD5_SUBTYPE
    .. autodata:: USER_DEFINED_SUBTYPE
 
    .. autoclass:: Binary(data[, subtype=BINARY_SUBTYPE])
+      :members:
+      :show-inheritance:
+
+   .. autoclass:: UUIDLegacy(obj)
       :members:
       :show-inheritance:

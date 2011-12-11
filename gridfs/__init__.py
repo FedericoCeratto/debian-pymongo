@@ -54,8 +54,10 @@ class GridFS(object):
         self.__collection = database[collection]
         self.__files = self.__collection.files
         self.__chunks = self.__collection.chunks
-        self.__chunks.ensure_index([("files_id", ASCENDING), ("n", ASCENDING)],
-                                   unique=True)
+        if not database.slave_okay and not database.read_preference:
+            self.__chunks.ensure_index([("files_id", ASCENDING),
+                                        ("n", ASCENDING)],
+                                       unique=True)
 
     def new_file(self, **kwargs):
         """Create a new file in GridFS.
@@ -166,14 +168,16 @@ class GridFS(object):
            Accept keyword arguments to find files by custom metadata.
         .. versionadded:: 1.9
         """
-        self.__files.ensure_index([("filename", ASCENDING),
-                                   ("uploadDate", DESCENDING)])
+        database = self.__database
+        if not database.slave_okay and not database.read_preference:
+            self.__files.ensure_index([("filename", ASCENDING),
+                                       ("uploadDate", DESCENDING)])
 
         query = kwargs
         if filename is not None:
             query["filename"] = filename
 
-        cursor = self.__files.find(query, ["_id"])
+        cursor = self.__files.find(query)
         if version < 0:
             skip = abs(version) - 1
             cursor.limit(-1).skip(skip).sort("uploadDate", DESCENDING)
@@ -181,7 +185,7 @@ class GridFS(object):
             cursor.limit(-1).skip(version).sort("uploadDate", ASCENDING)
         try:
             grid_file = cursor.next()
-            return GridOut(self.__collection, grid_file["_id"])
+            return GridOut(self.__collection, file_document=grid_file)
         except StopIteration:
             raise NoFile("no version %d for filename %r" % (version, filename))
 
