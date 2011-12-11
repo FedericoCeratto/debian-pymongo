@@ -91,8 +91,9 @@ static PyTypeObject* REType = NULL;
 static PyObject* elements_to_dict(const char* string, int max,
                                   PyObject* as_class, unsigned char tz_aware);
 
-static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* value,
-                                    unsigned char check_keys, unsigned char first_attempt);
+static int _write_element_to_buffer(buffer_t buffer, int type_byte,
+                                    PyObject* value, unsigned char check_keys,
+                                    unsigned char uuid_subtype, unsigned char first_attempt);
 
 /* Date stuff */
 static PyObject* datetime_from_millis(long long millis) {
@@ -212,12 +213,13 @@ static int _reload_python_objects(void) {
 
 static int write_element_to_buffer(buffer_t buffer, int type_byte,
                                    PyObject* value, unsigned char check_keys,
+                                   unsigned char uuid_subtype,
                                    unsigned char first_attempt) {
     int result;
     if(Py_EnterRecursiveCall(" while encoding an object to BSON "))
         return 0;
     result = _write_element_to_buffer(buffer, type_byte, value,
-                                      check_keys, first_attempt);
+                                      check_keys, uuid_subtype, first_attempt);
     Py_LeaveRecursiveCall();
     return result;
 }
@@ -227,8 +229,9 @@ static int write_element_to_buffer(buffer_t buffer, int type_byte,
  * space has already been reserved.
  *
  * returns 0 on failure */
-static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* value,
-                                    unsigned char check_keys, unsigned char first_attempt) {
+static int _write_element_to_buffer(buffer_t buffer, int type_byte,
+                                    PyObject* value, unsigned char check_keys,
+                                    unsigned char uuid_subtype, unsigned char first_attempt) {
     if (PyBool_Check(value)) {
         const long bool = PyInt_AsLong(value);
         const char c = bool ? 0x01 : 0x00;
@@ -270,7 +273,7 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
         return 1;
     } else if (PyDict_Check(value)) {
         *(buffer_get_buffer(buffer) + type_byte) = 0x03;
-        return write_dict(buffer, value, check_keys, 0);
+        return write_dict(buffer, value, check_keys, uuid_subtype, 0);
     } else if (PyList_Check(value) || PyTuple_Check(value)) {
         int start_position,
             length_location,
@@ -310,7 +313,8 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
             free(name);
 
             item_value = PySequence_GetItem(value, i);
-            if (!write_element_to_buffer(buffer, list_type_byte, item_value, check_keys, 1)) {
+            if (!write_element_to_buffer(buffer, list_type_byte,
+                                         item_value, check_keys, uuid_subtype, 1)) {
                 Py_DECREF(item_value);
                 return 0;
             }
@@ -371,7 +375,7 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
 
         // UUID is always 16 bytes, subtype 3
         int length = 16;
-        const char subtype = 3;
+        const char subtype = (const char)uuid_subtype;
 
         PyObject* bytes;
 
@@ -417,7 +421,7 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
         if (!scope) {
             return 0;
         }
-        if (!write_dict(buffer, scope, 0, 0)) {
+        if (!write_dict(buffer, scope, 0, uuid_subtype, 0)) {
             Py_DECREF(scope);
             return 0;
         }
@@ -494,7 +498,7 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
         if (!as_doc) {
             return 0;
         }
-        if (!write_dict(buffer, as_doc, 0, 0)) {
+        if (!write_dict(buffer, as_doc, 0, uuid_subtype, 0)) {
             Py_DECREF(as_doc);
             return 0;
         }
@@ -631,7 +635,7 @@ static int _write_element_to_buffer(buffer_t buffer, int type_byte, PyObject* va
         if (_reload_python_objects()) {
             return 0;
         }
-        return write_element_to_buffer(buffer, type_byte, value, check_keys, 0);
+        return write_element_to_buffer(buffer, type_byte, value, check_keys, uuid_subtype, 0);
     }
     {
         PyObject* errmsg = PyString_FromString("Cannot encode object: ");
@@ -673,7 +677,8 @@ static int check_key_name(const char* name,
  *
  * Returns 0 on failure */
 int write_pair(buffer_t buffer, const char* name, Py_ssize_t name_length,
-               PyObject* value, unsigned char check_keys, unsigned char allow_id) {
+               PyObject* value, unsigned char check_keys,
+               unsigned char uuid_subtype, unsigned char allow_id) {
     int type_byte;
 
     /* Don't write any _id elements unless we're explicitly told to -
@@ -694,7 +699,8 @@ int write_pair(buffer_t buffer, const char* name, Py_ssize_t name_length,
     if (!buffer_write_bytes(buffer, name, name_length + 1)) {
         return 0;
     }
-    if (!write_element_to_buffer(buffer, type_byte, value, check_keys, 1)) {
+    if (!write_element_to_buffer(buffer, type_byte, value,
+                                 check_keys, uuid_subtype, 1)) {
         return 0;
     }
     return 1;
@@ -702,7 +708,8 @@ int write_pair(buffer_t buffer, const char* name, Py_ssize_t name_length,
 
 int decode_and_write_pair(buffer_t buffer,
                           PyObject* key, PyObject* value,
-                          unsigned char check_keys, unsigned char top_level) {
+                          unsigned char check_keys,
+                          unsigned char uuid_subtype, unsigned char top_level) {
     PyObject* encoded;
     if (PyUnicode_Check(key)) {
         result_t status;
@@ -754,7 +761,8 @@ int decode_and_write_pair(buffer_t buffer,
 
     /* If top_level is True, don't allow writing _id here - it was already written. */
     if (!write_pair(buffer, PyString_AsString(encoded),
-                    PyString_Size(encoded), value, check_keys, !top_level)) {
+                    PyString_Size(encoded), value,
+                    check_keys, uuid_subtype, !top_level)) {
         Py_DECREF(encoded);
         return 0;
     }
@@ -764,7 +772,8 @@ int decode_and_write_pair(buffer_t buffer,
 }
 
 /* returns 0 on failure */
-int write_dict(buffer_t buffer, PyObject* dict, unsigned char check_keys, unsigned char top_level) {
+int write_dict(buffer_t buffer, PyObject* dict,
+               unsigned char check_keys, unsigned char uuid_subtype, unsigned char top_level) {
     PyObject* key;
     PyObject* iter;
     char zero = 0;
@@ -792,7 +801,7 @@ int write_dict(buffer_t buffer, PyObject* dict, unsigned char check_keys, unsign
         if (_id) {
             /* Don't bother checking keys, but do make sure we're allowed to
              * write _id */
-            if (!write_pair(buffer, "_id", 3, _id, 0, 1)) {
+            if (!write_pair(buffer, "_id", 3, _id, 0, uuid_subtype, 1)) {
                 return 0;
             }
         }
@@ -810,7 +819,8 @@ int write_dict(buffer_t buffer, PyObject* dict, unsigned char check_keys, unsign
             Py_DECREF(iter);
             return 0;
         }
-        if (!decode_and_write_pair(buffer, key, value, check_keys, top_level)) {
+        if (!decode_and_write_pair(buffer, key, value,
+                                   check_keys, uuid_subtype, top_level)) {
             Py_DECREF(key);
             Py_DECREF(iter);
             return 0;
@@ -832,9 +842,10 @@ static PyObject* _cbson_dict_to_bson(PyObject* self, PyObject* args) {
     PyObject* dict;
     PyObject* result;
     unsigned char check_keys;
+    unsigned char uuid_subtype;
     buffer_t buffer;
 
-    if (!PyArg_ParseTuple(args, "Ob", &dict, &check_keys)) {
+    if (!PyArg_ParseTuple(args, "Obb", &dict, &check_keys, &uuid_subtype)) {
         return NULL;
     }
 
@@ -844,7 +855,7 @@ static PyObject* _cbson_dict_to_bson(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    if (!write_dict(buffer, dict, check_keys, 1)) {
+    if (!write_dict(buffer, dict, check_keys, uuid_subtype, 1)) {
         buffer_free(buffer);
         return NULL;
     }
@@ -857,12 +868,16 @@ static PyObject* _cbson_dict_to_bson(PyObject* self, PyObject* args) {
 }
 
 static PyObject* get_value(const char* buffer, int* position, int type,
-                           PyObject* as_class, unsigned char tz_aware) {
+                           int max, PyObject* as_class, unsigned char tz_aware) {
     PyObject* value;
+    PyObject* error;
     switch (type) {
     case 1:
         {
             double d;
+            if (max < 8) {
+                goto invalid;
+            }
             memcpy(&d, buffer + *position, 8);
             value = PyFloat_FromDouble(d);
             if (!value) {
@@ -876,6 +891,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
     case 14:
         {
             int value_length = ((int*)(buffer + *position))[0] - 1;
+            if (max < value_length) {
+                goto invalid;
+            }
             *position += 4;
             value = PyUnicode_DecodeUTF8(buffer + *position, value_length, "strict");
             if (!value) {
@@ -888,6 +906,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
         {
             int size;
             memcpy(&size, buffer + *position, 4);
+            if (max < size) {
+                goto invalid;
+            }
             value = elements_to_dict(buffer + *position + 4, size - 5, as_class, tz_aware);
             if (!value) {
                 return NULL;
@@ -934,6 +955,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
                 end;
 
             memcpy(&size, buffer + *position, 4);
+            if (max < size) {
+                goto invalid;
+            }
             end = *position + size - 1;
             *position += 4;
 
@@ -947,7 +971,7 @@ static PyObject* get_value(const char* buffer, int* position, int type,
                 int type = (int)buffer[(*position)++];
                 int key_size = strlen(buffer + *position);
                 *position += key_size + 1; /* just skip the key, they're in order. */
-                to_append = get_value(buffer, position, type, as_class, tz_aware);
+                to_append = get_value(buffer, position, type, max - key_size, as_class, tz_aware);
                 if (!to_append) {
                     return NULL;
                 }
@@ -965,6 +989,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
                 subtype;
 
             memcpy(&length, buffer + *position, 4);
+            if (max < length) {
+                goto invalid;
+            }
             subtype = (unsigned char)buffer[*position + 4];
 
             if (subtype == 2) {
@@ -976,7 +1003,7 @@ static PyObject* get_value(const char* buffer, int* position, int type,
                 return NULL;
             }
 
-            if (subtype == 3 && UUID) { // Encode as UUID, not Binary
+            if ((subtype == 3 || subtype == 4) && UUID) { // Encode as UUID, not Binary
                 PyObject* kwargs;
                 PyObject* args = PyTuple_New(0);
                 if (!args) {
@@ -1027,6 +1054,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
         }
     case 7:
         {
+            if (max < 12) {
+                goto invalid;
+            }
             value = PyObject_CallFunction(ObjectId, "s#", buffer + *position, 12);
             if (!value) {
                 return NULL;
@@ -1042,10 +1072,14 @@ static PyObject* get_value(const char* buffer, int* position, int type,
         }
     case 9:
         {
+            PyObject* naive;
             PyObject* replace;
             PyObject* args;
             PyObject* kwargs;
-            PyObject* naive = datetime_from_millis(*(long long*)(buffer + *position));
+            if (max < 8) {
+                goto invalid;
+            }
+            naive = datetime_from_millis(*(long long*)(buffer + *position));
             *position += 8;
             if (!tz_aware) { /* In the naive case, we're done here. */
                 value = naive;
@@ -1085,17 +1119,23 @@ static PyObject* get_value(const char* buffer, int* position, int type,
         }
     case 11:
         {
+            PyObject* pattern;
             int flags_length,
                 flags,
                 i;
-
             int pattern_length = strlen(buffer + *position);
-            PyObject* pattern = PyUnicode_DecodeUTF8(buffer + *position, pattern_length, "strict");
+            if (max < pattern_length) {
+                goto invalid;
+            }
+            pattern = PyUnicode_DecodeUTF8(buffer + *position, pattern_length, "strict");
             if (!pattern) {
                 return NULL;
             }
             *position += pattern_length + 1;
             flags_length = strlen(buffer + *position);
+            if (max < pattern_length + flags_length) {
+                goto invalid;
+            }
             flags = 0;
             for (i = 0; i < flags_length; i++) {
                 if (buffer[*position + i] == 'i') {
@@ -1125,11 +1165,17 @@ static PyObject* get_value(const char* buffer, int* position, int type,
 
             *position += 4;
             collection_length = strlen(buffer + *position);
+            if (max < collection_length) {
+                goto invalid;
+            }
             collection = PyUnicode_DecodeUTF8(buffer + *position, collection_length, "strict");
             if (!collection) {
                 return NULL;
             }
             *position += collection_length + 1;
+            if (max < collection_length + 12) {
+                goto invalid;
+            }
             id = PyObject_CallFunction(ObjectId, "s#", buffer + *position, 12);
             if (!id) {
                 Py_DECREF(collection);
@@ -1150,6 +1196,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
 
             *position += 8;
             code_length = strlen(buffer + *position);
+            if (max < 8 + code_length) {
+                goto invalid;
+            }
             code = PyUnicode_DecodeUTF8(buffer + *position, code_length, "strict");
             if (!code) {
                 return NULL;
@@ -1173,6 +1222,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
     case 16:
         {
             int i;
+            if (max < 4) {
+                goto invalid;
+            }
             memcpy(&i, buffer + *position, 4);
             value = PyInt_FromLong(i);
             if (!value) {
@@ -1184,6 +1236,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
     case 17:
         {
             unsigned int time, inc;
+            if (max < 8) {
+                goto invalid;
+            }
             memcpy(&inc, buffer + *position, 4);
             memcpy(&time, buffer + *position + 4, 4);
             value = PyObject_CallFunction(Timestamp, "II", time, inc);
@@ -1196,6 +1251,9 @@ static PyObject* get_value(const char* buffer, int* position, int type,
     case 18:
         {
             long long ll;
+            if (max < 8) {
+                goto invalid;
+            }
             memcpy(&ll, buffer + *position, 8);
             value = PyLong_FromLongLong(ll);
             if (!value) {
@@ -1223,6 +1281,13 @@ static PyObject* get_value(const char* buffer, int* position, int type,
         }
     }
     return value;
+
+    invalid:
+
+    error = _error("InvalidBSON");
+    PyErr_SetNone(error);
+    Py_DECREF(error);
+    return NULL;
 }
 
 static PyObject* elements_to_dict(const char* string, int max,
@@ -1233,15 +1298,22 @@ static PyObject* elements_to_dict(const char* string, int max,
         return NULL;
     }
     while (position < max) {
+        PyObject* name;
+        PyObject* value;
         int type = (int)string[position++];
         int name_length = strlen(string + position);
-        PyObject* name = PyUnicode_DecodeUTF8(string + position, name_length, "strict");
-        PyObject* value;
+        if (position + name_length >= max) {
+            PyObject* InvalidBSON = _error("InvalidBSON");
+            PyErr_SetNone(InvalidBSON);
+            Py_DECREF(InvalidBSON);
+            return NULL;
+        }
+        name = PyUnicode_DecodeUTF8(string + position, name_length, "strict");
         if (!name) {
             return NULL;
         }
         position += name_length + 1;
-        value = get_value(string, &position, type, as_class, tz_aware);
+        value = get_value(string, &position, type, max - position, as_class, tz_aware);
         if (!value) {
             return NULL;
         }

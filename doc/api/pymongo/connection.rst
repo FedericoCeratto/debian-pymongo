@@ -4,11 +4,12 @@
 .. automodule:: pymongo.connection
    :synopsis: Tools for connecting to MongoDB
 
-   .. autoclass:: pymongo.connection.Connection([host='localhost'[, port=27017[, max_pool_size=10[, slave_okay=False[, network_timeout=None[, document_class=dict[, tz_aware=False]]]]]]])
+   .. autoclass:: pymongo.connection.Connection([host='localhost'[, port=27017[, max_pool_size=10[, network_timeout=None[, document_class=dict[, tz_aware=False[, **kwargs]]]]]]])
 
       .. automethod:: from_uri([uri='mongodb://localhost'])
       .. automethod:: paired(left[, right=('localhost', 27017)])
       .. automethod:: disconnect
+      .. automethod:: close
 
       .. describe:: c[db_name] || c.db_name
 
@@ -19,9 +20,16 @@
       .. autoattribute:: host
       .. autoattribute:: port
       .. autoattribute:: nodes
-      .. autoattribute:: slave_okay
+      .. autoattribute:: max_pool_size
       .. autoattribute:: document_class
       .. autoattribute:: tz_aware
+      .. autoattribute:: read_preference
+      .. autoattribute:: slave_okay
+      .. autoattribute:: safe
+      .. autoattribute:: is_locked
+      .. automethod:: get_lasterror_options
+      .. automethod:: set_lasterror_options
+      .. automethod:: unset_lasterror_options
       .. automethod:: database_names
       .. automethod:: drop_database
       .. automethod:: copy_database(from_name, to_name[, from_host=None[, username=None[, password=None]]])
@@ -31,3 +39,5 @@
       .. automethod:: close_cursor
       .. automethod:: kill_cursors
       .. automethod:: set_cursor_manager
+      .. automethod:: fsync
+      .. automethod:: unlock

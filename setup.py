@@ -19,8 +19,7 @@ from distutils.errors import CCompilerError
 from distutils.errors import DistutilsPlatformError, DistutilsExecError
 from distutils.core import Extension
 
-# Remember to change in pymongo/__init__.py as well!
-version = "1.11"
+from pymongo import version
 
 f = open("README.rst")
 try:
@@ -100,8 +99,12 @@ be compiled. No C extensions are essential for PyMongo to run,
 although they do result in significant speed improvements.
 
 If you are seeing this message on Linux you probably need to
-install GCC and/or the Python development libraries for your
-version of Python.
+install GCC and/or the Python development package for your
+version of Python. Python development package names for popular
+Linux distributions include:
+
+RHEL/CentOS: python-devel
+Debian/Ubuntu: python-dev
 
 %s
 **************************************************************
@@ -152,6 +155,16 @@ c_ext = Feature(
 if "--no_ext" in sys.argv:
     sys.argv = [x for x in sys.argv if x != "--no_ext"]
     features = {}
+elif (sys.platform.startswith("java") or
+      sys.platform == "cli" or
+      "PyPy" in sys.version):
+    print """
+*****************************************************
+The optional C extensions are currently not supported
+by this python implementation.
+*****************************************************
+"""
+    features = {}
 elif sys.byteorder == "big":
     print """
 *****************************************************
@@ -179,6 +192,7 @@ setup(
     install_requires=[],
     features=features,
     license="Apache License, Version 2.0",
+    tests_require=['nose'],
     test_suite="nose.collector",
     classifiers=[
         "Development Status :: 5 - Production/Stable",

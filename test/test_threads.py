@@ -20,7 +20,26 @@ import threading
 from nose.plugins.skip import SkipTest
 
 from test_connection import get_connection
-from pymongo.errors import AutoReconnect
+from pymongo.errors import (AutoReconnect,
+                            OperationFailure,
+                            DuplicateKeyError)
+
+
+class AutoAuthenticateThreads(threading.Thread):
+
+    def __init__(self, collection, num):
+        threading.Thread.__init__(self)
+        self.coll = collection
+        self.num = num
+        self.success = True
+
+    def run(self):
+        try:
+            for i in xrange(self.num):
+                self.coll.insert({'num':i}, safe=True)
+                self.coll.find_one({'num':i})
+        except Exception:
+            self.success = False
 
 
 class SaveAndFind(threading.Thread):
@@ -98,13 +117,27 @@ class IgnoreAutoReconnect(threading.Thread):
                 pass
 
 
-class TestThreads(unittest.TestCase):
-
+class BaseTestThreads(object):
+    """
+    Base test class for TestThreads and TestThreadsReplicaSet. (This is not
+    itself a unittest.TestCase, otherwise it'd be run twice -- once when nose
+    imports this module, and once when nose imports
+    test_threads_replica_set_connection.py, which imports this module.)
+    """
     def setUp(self):
-        self.db = get_connection().pymongo_test
+        self.db = self._get_connection().pymongo_test
+
+    def _get_connection(self):
+        """
+        Intended for overriding in TestThreadsReplicaSet. This method
+        returns a Connection here, and a ReplicaSetConnection in
+        test_threads_replica_set_connection.py.
+        """
+        # Regular test connection
+        return get_connection()
 
     def test_threading(self):
-        self.db.test.remove({})
+        self.db.drop_collection("test")
         for i in xrange(1000):
             self.db.test.save({"x": i}, safe=True)
 
@@ -176,6 +209,82 @@ class TestThreads(unittest.TestCase):
         for t in threads:
             t.join()
 
+
+class BaseTestThreadsAuth(object):
+    """
+    Base test class for TestThreadsAuth and TestThreadsAuthReplicaSet. (This is
+    not itself a unittest.TestCase, otherwise it'd be run twice -- once when
+    nose imports this module, and once when nose imports
+    test_threads_replica_set_connection.py, which imports this module.)
+    """
+    def _get_connection(self):
+        """
+        Intended for overriding in TestThreadsAuthReplicaSet. This method
+        returns a Connection here, and a ReplicaSetConnection in
+        test_threads_replica_set_connection.py.
+        """
+        # Regular test connection
+        return get_connection()
+
+    def setUp(self):
+        self.conn = self._get_connection()
+        self.conn.admin.system.users.remove({})
+        self.conn.admin.add_user('admin-user', 'password')
+        try:
+            self.conn.admin.system.users.find_one()
+            # If we reach here mongod was likely started
+            # without --auth. Skip this test since it's
+            # pointless without auth enabled.
+            self.tearDown()
+            raise SkipTest()
+        except OperationFailure:
+            pass
+        self.conn.admin.authenticate("admin-user", "password")
+        self.conn.auth_test.system.users.remove({})
+        self.conn.auth_test.add_user("test-user", "password")
+
+    def tearDown(self):
+        # Remove auth users from databases
+        self.conn.admin.authenticate("admin-user", "password")
+        self.conn.admin.system.users.remove({})
+        self.conn.auth_test.system.users.remove({})
+        self.conn.drop_database('auth_test')
+
+    def test_auto_auth_login(self):
+        conn = self._get_connection()
+        self.assertRaises(OperationFailure, conn.auth_test.test.find_one)
+
+        # Admin auth
+        conn = self._get_connection()
+        conn.admin.authenticate("admin-user", "password")
+
+        threads = []
+        for _ in xrange(10):
+            t = AutoAuthenticateThreads(conn.auth_test.test, 100)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+            self.assertTrue(t.success)
+
+        # Database-specific auth
+        conn = self._get_connection()
+        conn.auth_test.authenticate("test-user", "password")
+
+        threads = []
+        for _ in xrange(10):
+            t = AutoAuthenticateThreads(conn.auth_test.test, 100)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+            self.assertTrue(t.success)
+
+class TestThreads(BaseTestThreads, unittest.TestCase):
+    pass
+
+class TestThreadsAuth(BaseTestThreadsAuth, unittest.TestCase):
+    pass
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,14 +14,18 @@
 
 """Test for master slave connections."""
 
-import unittest
+import datetime
 import os
-import time
 import sys
+import time
+import unittest
 sys.path[0:0] = [""]
 
 from nose.plugins.skip import SkipTest
 
+from bson.son import SON
+from bson.tz_util import utc
+from pymongo import ReadPreference
 from pymongo.errors import ConnectionFailure, InvalidName
 from pymongo.errors import CollectionInvalid, OperationFailure
 from pymongo.errors import AutoReconnect
@@ -41,14 +45,14 @@ class TestMasterSlaveConnection(unittest.TestCase):
         try:
             self.slaves.append(Connection(os.environ.get("DB_IP2", host),
                                int(os.environ.get("DB_PORT2", 27018)),
-                               slave_okay=True))
+                               read_preference=ReadPreference.SECONDARY))
         except ConnectionFailure:
             pass
 
         try:
             self.slaves.append(Connection(os.environ.get("DB_IP3", host),
                                int(os.environ.get("DB_PORT3", 27019)),
-                               slave_okay=True))
+                               read_preference=ReadPreference.SECONDARY))
         except ConnectionFailure:
             pass
 
@@ -178,6 +182,7 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.assert_("pymongo_test_mike" in dbs)
 
     def test_drop_database(self):
+        # This test has been known to fail due to SERVER-2329
         self.assertRaises(TypeError, self.connection.drop_database, 5)
         self.assertRaises(TypeError, self.connection.drop_database, None)
 
@@ -312,6 +317,114 @@ class TestMasterSlaveConnection(unittest.TestCase):
             break
 
         self.assertEqual(before, cursor_count())
+
+    def test_base_object(self):
+        c = self.connection
+        self.assertFalse(c.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertFalse(c.safe)
+        self.assertEqual({}, c.get_lasterror_options())
+        db = c.test
+        self.assertFalse(db.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertFalse(db.safe)
+        self.assertEqual({}, db.get_lasterror_options())
+        coll = db.test
+        self.assertFalse(coll.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertFalse(coll.safe)
+        self.assertEqual({}, coll.get_lasterror_options())
+        cursor = coll.find()
+        self.assertFalse(cursor._Cursor__slave_okay)
+        self.assertTrue(bool(cursor._Cursor__read_preference))
+
+        c.safe = True
+        c.set_lasterror_options(w=3, wtimeout=100)
+        self.assertFalse(c.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertTrue(c.safe)
+        self.assertEqual({'w': 3, 'wtimeout': 100}, c.get_lasterror_options())
+        db = c.test
+        self.assertFalse(db.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertTrue(db.safe)
+        self.assertEqual({'w': 3, 'wtimeout': 100}, db.get_lasterror_options())
+        coll = db.test
+        self.assertFalse(coll.slave_okay)
+        self.assertTrue(bool(c.read_preference))
+        self.assertTrue(coll.safe)
+        self.assertEqual({'w': 3, 'wtimeout': 100},
+                         coll.get_lasterror_options())
+        cursor = coll.find()
+        self.assertFalse(cursor._Cursor__slave_okay)
+        self.assertTrue(bool(cursor._Cursor__read_preference))
+
+        coll.insert({'foo': 'bar'})
+        self.assertEquals(1, coll.find({'foo': 'bar'}).count())
+        self.assert_(coll.find({'foo': 'bar'}))
+        coll.remove({'foo': 'bar'})
+        self.assertEquals(0, coll.find({'foo': 'bar'}).count())
+
+        # Set self.connection back to defaults
+        c.safe = False
+        c.unset_lasterror_options()
+        self.assertFalse(self.connection.slave_okay)
+        self.assertTrue(bool(self.connection.read_preference))
+        self.assertFalse(self.connection.safe)
+        self.assertEqual({}, self.connection.get_lasterror_options())
+
+    def test_document_class(self):
+        c = MasterSlaveConnection(self.master, self.slaves)
+        db = c.pymongo_test
+        db.test.insert({"x": 1})
+        time.sleep(1)
+
+        self.assertEqual(dict, c.document_class)
+        self.assert_(isinstance(db.test.find_one(), dict))
+        self.assertFalse(isinstance(db.test.find_one(), SON))
+
+        c.document_class = SON
+
+        self.assertEqual(SON, c.document_class)
+        self.assert_(isinstance(db.test.find_one(), SON))
+        self.assertFalse(isinstance(db.test.find_one(as_class=dict), SON))
+
+        c = MasterSlaveConnection(self.master, self.slaves, document_class=SON)
+        db = c.pymongo_test
+
+        self.assertEqual(SON, c.document_class)
+        self.assert_(isinstance(db.test.find_one(), SON))
+        self.assertFalse(isinstance(db.test.find_one(as_class=dict), SON))
+
+        c.document_class = dict
+
+        self.assertEqual(dict, c.document_class)
+        self.assert_(isinstance(db.test.find_one(), dict))
+        self.assertFalse(isinstance(db.test.find_one(), SON))
+
+    def test_tz_aware(self):
+        dt = datetime.datetime.utcnow()
+        conn = MasterSlaveConnection(self.master, self.slaves)
+        self.assertEquals(False, conn.tz_aware)
+        db = conn.pymongo_test
+        db.tztest.insert({'dt': dt}, safe=True)
+        time.sleep(0.5)
+        self.assertEqual(None, db.tztest.find_one()['dt'].tzinfo)
+
+        conn = MasterSlaveConnection(self.master, self.slaves, tz_aware=True)
+        self.assertEquals(True, conn.tz_aware)
+        db = conn.pymongo_test
+        db.tztest.insert({'dt': dt}, safe=True)
+        time.sleep(0.5)
+        self.assertEqual(utc, db.tztest.find_one()['dt'].tzinfo)
+
+        conn = MasterSlaveConnection(self.master, self.slaves, tz_aware=False)
+        self.assertEquals(False, conn.tz_aware)
+        db = conn.pymongo_test
+        db.tztest.insert({'dt': dt})
+        time.sleep(0.5)
+        self.assertEqual(None, db.tztest.find_one()['dt'].tzinfo)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -65,9 +65,9 @@ def _index_document(index_list):
     for (key, value) in index_list:
         if not isinstance(key, basestring):
             raise TypeError("first item in each key pair must be a string")
-        if value not in [pymongo.ASCENDING, pymongo.DESCENDING, pymongo.GEO2D]:
+        if value not in [pymongo.ASCENDING, pymongo.DESCENDING, pymongo.GEO2D, pymongo.GEOHAYSTACK]:
             raise TypeError("second item in each key pair must be ASCENDING, "
-                            "DESCENDING, or GEO2D")
+                            "DESCENDING, GEO2D, or GEOHAYSTACK")
         index[key] = value
     return index
 
@@ -94,7 +94,7 @@ def _unpack_response(response, cursor_id=None, as_class=dict, tz_aware=False):
                                cursor_id)
     elif response_flag & 2:
         error_object = bson.BSON(response[20:]).decode()
-        if error_object["$err"] == "not master":
+        if error_object["$err"].startswith("not master"):
             raise AutoReconnect("master has changed")
         raise OperationFailure("database error: %s" %
                                error_object["$err"])
@@ -114,7 +114,8 @@ def _check_command_response(response, reset, msg="%s", allowable_errors=[]):
             raise TimeoutError(msg % response["errmsg"])
         if not response["errmsg"] in allowable_errors:
             if response["errmsg"] == "not master":
-                reset()
+                if reset is not None:
+                    reset()
                 raise AutoReconnect("not master")
             if response["errmsg"] == "db assertion failure":
                 ex_msg = ("db assertion failure, assertion: '%s'" %

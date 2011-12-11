@@ -27,8 +27,11 @@ import sys
 import unittest
 sys.path[0:0] = [""]
 
+from nose.plugins.skip import SkipTest
+
 from bson.objectid import ObjectId
-from gridfs.grid_file import (_SEEK_CUR,
+from gridfs.grid_file import (DEFAULT_CHUNK_SIZE,
+                              _SEEK_CUR,
                               _SEEK_END,
                               GridIn,
                               GridFile,
@@ -469,8 +472,49 @@ Bye""")
         self.assertRaises(AttributeError, setattr, f, "upload_date", 5)
 
         g = GridOut(self.db.fs, f._id)
-        self.assertEqual("a", f.bar)
-        self.assertEqual("b", f.baz)
+        self.assertEqual("a", g.bar)
+        self.assertEqual("b", g.baz)
+        # Versions 2.0.1 and older saved a _closed field for some reason.
+        self.assertRaises(AttributeError, getattr, g, "_closed")
+
+    def test_context_manager(self):
+        if sys.version_info < (2, 6):
+            raise SkipTest()
+
+        contents = "Imagine this is some important data..."
+        # Hack around python2.4 an 2.5 not supporting 'with' syntax
+        exec """
+with GridIn(self.db.fs, filename="important") as infile:
+    infile.write(contents)
+
+with GridOut(self.db.fs, infile._id) as outfile:
+    self.assertEqual(contents, outfile.read())
+"""
+
+    def test_prechunked_string(self):
+
+        def write_me(s, chunk_size):
+            buffer = StringIO(s)
+            infile = GridIn(self.db.fs)
+            while True:
+                to_write = buffer.read(chunk_size)
+                if to_write == '':
+                    break
+                infile.write(to_write)
+            infile.close()
+            buffer.close()
+
+            outfile = GridOut(self.db.fs, infile._id)
+            data = outfile.read()
+            self.assertEqual(s, data)
+
+        s = 'x' * DEFAULT_CHUNK_SIZE * 4
+        # Test with default chunk size
+        write_me(s, DEFAULT_CHUNK_SIZE)
+        # Multiple
+        write_me(s, DEFAULT_CHUNK_SIZE * 3)
+        # Custom
+        write_me(s, 262300)
 
 
 if __name__ == "__main__":

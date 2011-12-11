@@ -55,6 +55,9 @@ def _create_property(field_name, docstring,
         if closed_only and not self._closed:
             raise AttributeError("can only get %r on a closed file" %
                                  field_name)
+        # Protect against PHP-237
+        if field_name == 'length':
+            return self._file.get(field_name, 0)
         return self._file.get(field_name, None)
 
     def setter(self, value):
@@ -218,7 +221,7 @@ class GridIn(object):
         """
         if not self._closed:
             self.__flush()
-            self._closed = True
+            object.__setattr__(self, "_closed", True)
 
     def write(self, data):
         """Write data to the file. There is no return value.
@@ -248,39 +251,35 @@ class GridIn(object):
         if self._closed:
             raise ValueError("cannot write to a closed file")
 
-        # file-like
         try:
-            if self._buffer.tell() > 0:
-                space = self.chunk_size - self._buffer.tell()
-                self._buffer.write(data.read(space))
-                self.__flush_buffer()
-            to_write = data.read(self.chunk_size)
-            while to_write and len(to_write) == self.chunk_size:
-                self.__flush_data(to_write)
-                to_write = data.read(self.chunk_size)
-            self._buffer.write(to_write)
-        # string
+            # file-like
+            read = data.read
         except AttributeError:
+            # string
             if not isinstance(data, basestring):
                 raise TypeError("can only write strings or file-like objects")
-
             if isinstance(data, unicode):
                 try:
                     data = data.encode(self.encoding)
                 except AttributeError:
                     raise TypeError("must specify an encoding for file in "
                                     "order to write unicode")
+            read = StringIO(data).read
 
-            while data:
-                space = self.chunk_size - self._buffer.tell()
-
-                if len(data) <= space:
-                    self._buffer.write(data)
-                    break
-                else:
-                    self._buffer.write(data[:space])
-                    self.__flush_buffer()
-                    data = data[space:]
+        if self._buffer.tell() > 0:
+            # Make sure to flush only when _buffer is complete
+            space = self.chunk_size - self._buffer.tell()
+            if space:
+                to_write = read(space)
+                self._buffer.write(to_write)
+                if len(to_write) < space:
+                    return # EOF or incomplete
+            self.__flush_buffer()
+        to_write = read(self.chunk_size)
+        while to_write and len(to_write) == self.chunk_size:
+            self.__flush_data(to_write)
+            to_write = read(self.chunk_size)
+        self._buffer.write(to_write)
 
     def writelines(self, sequence):
         """Write a sequence of strings to the file.
@@ -466,6 +465,22 @@ class GridOut(object):
         webserver that handles such an iterator efficiently.
         """
         return GridOutIterator(self, self.__chunks)
+
+    def close(self):
+        """Make GridOut more generically file-like."""
+        pass
+
+    def __enter__(self):
+        """Makes it possible to use :class:`GridOut` files
+        with the context manager protocol.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Makes it possible to use :class:`GridOut` files
+        with the context manager protocol.
+        """
+        return False
 
 
 class GridOutIterator(object):

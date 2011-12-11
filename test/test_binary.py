@@ -16,9 +16,16 @@
 
 import unittest
 import sys
+try:
+    import uuid
+    should_test_uuid = True
+except ImportError:
+    should_test_uuid = False
 sys.path[0:0] = [""]
 
-from bson.binary import Binary
+from bson.binary import Binary, UUIDLegacy
+from nose.plugins.skip import SkipTest
+from test_connection import get_connection
 
 
 class TestBinary(unittest.TestCase):
@@ -47,7 +54,9 @@ class TestBinary(unittest.TestCase):
         self.assert_(Binary("hello", 255))
 
     def test_subtype(self):
-        b = Binary("hello")
+        a = Binary("hello")
+        self.assertEqual(a.subtype, 0)
+        b = Binary("hello", 2)
         self.assertEqual(b.subtype, 2)
         c = Binary("hello", 100)
         self.assertEqual(c.subtype, 100)
@@ -62,12 +71,49 @@ class TestBinary(unittest.TestCase):
         self.assertNotEqual("hello", Binary("hello"))
 
     def test_repr(self):
-        b = Binary("hello world")
+        a = Binary("hello world")
+        self.assertEqual(repr(a), "Binary('hello world', 0)")
+        b = Binary("hello world", 2)
         self.assertEqual(repr(b), "Binary('hello world', 2)")
         c = Binary("\x08\xFF")
-        self.assertEqual(repr(c), "Binary('\\x08\\xff', 2)")
-        d = Binary("test", 100)
-        self.assertEqual(repr(d), "Binary('test', 100)")
+        self.assertEqual(repr(c), "Binary('\\x08\\xff', 0)")
+        d = Binary("\x08\xFF", 2)
+        self.assertEqual(repr(d), "Binary('\\x08\\xff', 2)")
+        e = Binary("test", 100)
+        self.assertEqual(repr(e), "Binary('test', 100)")
+
+    def test_uuid_queries(self):
+        if not should_test_uuid:
+            raise SkipTest()
+
+        c = get_connection()
+        coll = c.pymongo_test.test
+        coll.drop()
+
+        uu = uuid.uuid4()
+        coll.insert({'uuid': Binary(uu.bytes, 3)})
+        self.assertEqual(1, coll.count())
+
+        # Test UUIDLegacy queries.
+        coll.uuid_subtype = 4
+        self.assertEqual(0, coll.find({'uuid': uu}).count())
+        cur = coll.find({'uuid': UUIDLegacy(uu)})
+        self.assertEqual(1, cur.count())
+        retrieved = cur.next()['uuid']
+        self.assertEqual(uu, retrieved)
+
+        # Test regular UUID queries (using subtype 4).
+        coll.insert({'uuid': uu})
+        self.assertEqual(2, coll.count())
+        cur = coll.find({'uuid': uu})
+        self.assertEqual(1, cur.count())
+        self.assertEqual(uu, cur.next()['uuid'])
+
+        # Test both.
+        cur = coll.find({'uuid': {'$in': [uu, UUIDLegacy(uu)]}})
+        self.assertEqual(2, cur.count())
+        coll.drop()
+
 
 if __name__ == "__main__":
     unittest.main()

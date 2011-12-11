@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+try:
+    from uuid import UUID
+except ImportError:
+    # Python2.4 doesn't have a uuid module.
+    pass
+
 """Tools for representing BSON binary data.
 """
 
 BINARY_SUBTYPE = 0
 """BSON binary subtype for binary data.
 
-This is becomming the default subtype and should be the most commonly
-used.
+This is the default subtype for binary data.
 
 .. versionadded:: 1.5
 """
@@ -33,19 +38,30 @@ FUNCTION_SUBTYPE = 1
 OLD_BINARY_SUBTYPE = 2
 """Old BSON binary subtype for binary data.
 
-This is still the default subtype, but that is changing to
-:data:`BINARY_SUBTYPE`.
+This is the old default subtype, the current
+default is :data:`BINARY_SUBTYPE`.
 
 .. versionadded:: 1.7
 """
 
-UUID_SUBTYPE = 3
+UUID_SUBTYPE = 4
 """BSON binary subtype for a UUID.
+
+This is the new BSON binary subtype for UUIDs. The
+current default is :data:`OLD_UUID_SUBTYPE` but will
+change to this in a future release.
+
+.. versionchanged:: 2.0.1+
+.. versionadded:: 1.5
+"""
+
+OLD_UUID_SUBTYPE = 3
+"""Old BSON binary subtype for a UUID.
 
 :class:`uuid.UUID` instances will automatically be encoded
 by :mod:`bson` using this subtype.
 
-.. versionadded:: 1.5
+.. versionadded:: 2.0.1+
 """
 
 MD5_SUBTYPE = 5
@@ -80,7 +96,7 @@ class Binary(str):
         to use
     """
 
-    def __new__(cls, data, subtype=OLD_BINARY_SUBTYPE):
+    def __new__(cls, data, subtype=BINARY_SUBTYPE):
         if not isinstance(data, str):
             raise TypeError("data must be an instance of str")
         if not isinstance(subtype, int):
@@ -110,3 +126,55 @@ class Binary(str):
 
     def __repr__(self):
         return "Binary(%s, %s)" % (str.__repr__(self), self.__subtype)
+
+
+class UUIDLegacy(Binary):
+    """UUID wrapper to support working with UUIDs stored as legacy
+    BSON binary subtype 3.
+
+    .. doctest::
+
+      >>> import uuid
+      >>> from bson.binary import Binary, UUIDLegacy
+      >>> id = uuid.uuid4()
+      >>> db.test.insert({'uuid': Binary(id.bytes, 3)})
+      ObjectId('...')
+      >>> db.test.find({'uuid': id}).count()
+      0
+      >>> db.test.find({'uuid': UUIDLegacy(id)}).count()
+      1
+      >>> db.test.find({'uuid': UUIDLegacy(id)})[0]['uuid']
+      UUID('...')
+      >>>
+      >>> # Convert from subtype 3 to subtype 4
+      >>> doc = db.test.find_one({'uuid': UUIDLegacy(id)})
+      >>> db.test.save(doc)
+      ObjectId('...')
+      >>> db.test.find({'uuid': UUIDLegacy(id)}).count()
+      0
+      >>> db.test.find({'uuid': {'$in': [UUIDLegacy(id), id]}}).count()
+      1
+      >>> db.test.find_one({'uuid': id})['uuid']
+      UUID('...')
+
+    Raises TypeError if `obj` is not an instance of :class:`~uuid.UUID`.
+
+    :Parameters:
+      - `obj`: An instance of :class:`~uuid.UUID`.
+    """
+
+    def __new__(cls, obj):
+        if not isinstance(obj, UUID):
+            raise TypeError("obj must be an instance of uuid.UUID")
+        self = Binary.__new__(cls, obj.bytes, OLD_UUID_SUBTYPE)
+        self.__uuid = obj
+        return self
+
+    @property
+    def uuid(self):
+        """UUID instance wrapped by this UUIDLegacy instance.
+        """
+        return self.__uuid
+
+    def __repr__(self):
+        return "UUIDLegacy('%s')" % self.__uuid

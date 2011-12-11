@@ -21,23 +21,27 @@ or all slaves failed.
 
 import random
 
+from pymongo import ReadPreference
+from pymongo.common import BaseObject
 from pymongo.connection import Connection
 from pymongo.database import Database
 from pymongo.errors import AutoReconnect
 
 
-class MasterSlaveConnection(object):
+class MasterSlaveConnection(BaseObject):
     """A master-slave connection to Mongo.
     """
 
-    def __init__(self, master, slaves=[]):
+    def __init__(self, master, slaves=[], document_class=dict, tz_aware=False):
         """Create a new Master-Slave connection.
 
         The resultant connection should be interacted with using the same
         mechanisms as a regular `Connection`. The `Connection` instances used
         to create this `MasterSlaveConnection` can themselves make use of
         connection pooling, etc. 'Connection' instances used as slaves should
-        be created with the slave_okay option set to True.
+        be created with the read_preference option set to
+        :attr:`~pymongo.ReadPreference.SECONDARY`. Safe options are
+        inherited from `master` and can be changed in this instance.
 
         Raises TypeError if `master` is not an instance of `Connection` or
         slaves is not a list of at least one `Connection` instances.
@@ -46,6 +50,12 @@ class MasterSlaveConnection(object):
           - `master`: `Connection` instance for the writable Master
           - `slaves` (optional): list of `Connection` instances for the
             read-only slaves
+          - `document_class` (optional): default class to use for
+            documents returned from queries on this connection
+          - `tz_aware` (optional): if ``True``,
+            :class:`~datetime.datetime` instances returned as values
+            in a document by this :class:`MasterSlaveConnection` will be timezone
+            aware (otherwise they will be naive)
         """
         if not isinstance(master, Connection):
             raise TypeError("master must be a Connection instance")
@@ -57,9 +67,16 @@ class MasterSlaveConnection(object):
                 raise TypeError("slave %r is not an instance of Connection" %
                                 slave)
 
+        super(MasterSlaveConnection,
+              self).__init__(read_preference=ReadPreference.SECONDARY,
+                             safe=master.safe,
+                             **(master.get_lasterror_options()))
+
         self.__in_request = False
         self.__master = master
         self.__slaves = slaves
+        self.__document_class = document_class
+        self.__tz_aware = tz_aware
 
     @property
     def master(self):
@@ -69,23 +86,19 @@ class MasterSlaveConnection(object):
     def slaves(self):
         return self.__slaves
 
-    # TODO this is a temporary hack PYTHON-136 is the right solution for this
-    @property
-    def document_class(self):
-        return dict
+    def get_document_class(self):
+        return self.__document_class
 
-    # TODO this is a temporary hack PYTHON-136 is the right solution for this
+    def set_document_class(self, klass):
+        self.__document_class = klass
+
+    document_class = property(get_document_class, set_document_class,
+                              doc="""Default class to use for documents
+                              returned on this connection.""")
+
     @property
     def tz_aware(self):
-        return True
-
-    @property
-    def slave_okay(self):
-        """Is it okay for this connection to connect directly to a slave?
-
-        This is always True for MasterSlaveConnection instances.
-        """
-        return True
+        return self.__tz_aware
 
     def disconnect(self):
         """Disconnect from MongoDB.
@@ -94,7 +107,7 @@ class MasterSlaveConnection(object):
         connections.
 
         .. seealso:: Module :mod:`~pymongo.connection`
-        .. versionadded:: 1.10+
+        .. versionadded:: 1.10.1
         """
         self.__master.disconnect()
         for slave in self.__slaves:
@@ -256,6 +269,10 @@ class MasterSlaveConnection(object):
 
     def next(self):
         raise TypeError("'MasterSlaveConnection' object is not iterable")
+
+    def _cached(self, database_name, collection_name, index_name):
+        return self.__master._cached(database_name,
+                                     collection_name, index_name)
 
     def _cache_index(self, database_name, collection_name, index_name, ttl):
         return self.__master._cache_index(database_name, collection_name,

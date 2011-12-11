@@ -1,6 +1,117 @@
 Changelog
 =========
 
+Changes in Version 2.1
+------------------------
+
+Version 2.1 adds a few frequently requested features and includes the usual
+round of bug fixes and improvements.
+
+Special thanks go to Alexey Borzenkov, Dan Crosta, Kostya Rybnikov,
+Flavio Percoco Premoli, Jonas Haag, and Jesse Davis for their contributions
+to this release.
+
+Important New Features:
+
+- ReplicaSetConnection -
+  :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+  can be used to distribute reads to secondaries in a replica set. It supports
+  automatic failover handling and periodically checks the state of the
+  replica set to handle issues like primary stepdown or secondaries
+  being removed for backup operations. Read preferences are defined through
+  :class:`~pymongo.ReadPreference`.
+- PyMongo supports the new BSON binary subtype 4 for UUIDs. The default
+  subtype to use can be set through
+  :attr:`~pymongo.collection.Collection.uuid_subtype`
+  The current default remains :attr:`~bson.binary.OLD_UUID_SUBTYPE` but will
+  be changed to :attr:`~bson.binary.UUID_SUBTYPE` in a future release.
+- The getLastError option 'w' can be set to a string, allowing for options
+  like "majority" available in newer version of MongoDB.
+- Added support for the MongoDB URI options socketTimeoutMS and connectTimeoutMS.
+- Added support for the ContinueOnError insert flag.
+- Added basic SSL support.
+- Secondaries can be used for :meth:`~pymongo.cursor.Cursor.count`,
+  :meth:`~pymongo.cursor.Cursor.distinct`, :meth:`~pymongo.collection.Collection.group`,
+  and querying :class:`~gridfs.GridFS`.
+- Added document_class and tz_aware options to
+  :class:`~pymongo.master_slave_connection.MasterSlaveConnection`
+
+Issues Resolved
+...............
+
+See the `PyMongo 2.1 release notes in JIRA`_ for the list of resolved issues in this release.
+
+.. _PyMongo 2.1 release notes in JIRA: https://jira.mongodb.org/secure/ReleaseNote.jspa?projectId=10004&version=10583
+
+Changes in Version 2.0.1
+------------------------
+
+Version 2.0.1 fixes a regression in :class:`~gridfs.grid_file.GridIn` when
+writing pre-chunked strings. Thanks go to Alexey Borzenkov for reporting the
+issue and submitting a patch.
+
+Issues Resolved
+...............
+
+- `PYTHON-271 <https://jira.mongodb.org/browse/PYTHON-271>`_:
+  Regression in GridFS leads to serious loss of data.
+
+Changes in Version 2.0
+----------------------
+
+Version 2.0 adds a large number of features and fixes a number of issues.
+
+Special thanks go to James Murty, Abhay Vardhan, David Pisoni, Ryan Smith-Roberts,
+Andrew Pendleton, Mher Movsisyan, Reed O'Brien, Michael Schurter, Josip Delic
+and Jonas Haag for their contributions to this release.
+
+Important New Features:
+
+- PyMongo now performs automatic per-socket database authentication. You no
+  longer have to re-authenticate for each new thread or after a replica set
+  failover. Authentication credentials are cached by the driver until the
+  application calls :meth:`~pymongo.database.Database.logout`.
+- slave_okay can be set independently at the connection, database, collection
+  or query level. Each level will inherit the slave_okay setting from the
+  previous level and each level can override the previous level's setting.
+- safe and getLastError options (e.g. w, wtimeout, etc.) can be set
+  independently at the connection, database, collection or query level. Each
+  level will inherit settings from the previous level and each level can
+  override the previous level's setting.
+- PyMongo now supports the `await_data` and `partial` cursor flags. If the
+  `await_data` flag is set on a `tailable` cursor the server will block for
+  some extra time waiting for more data to return. The `partial` flag tells
+  a mongos to return partial data for a query if not all shards are available.
+- :meth:`~pymongo.collection.Collection.map_reduce` will accept a `dict` or
+  instance of :class:`~bson.son.SON` as the `out` parameter.
+- The URI parser has been moved into its own module and can be used directly
+  by application code.
+- AutoReconnect exception now provides information about the error that
+  actually occured instead of a generic failure message.
+- A number of new helper methods have been added with options for setting and
+  unsetting cursor flags, re-indexing a collection, fsync and locking a server,
+  and getting the server's current operations.
+
+API changes:
+
+- If only one host:port pair is specified :class:`~pymongo.connection.Connection`
+  will make a direct connection to only that host. Please note that `slave_okay`
+  must be `True` in order to query from a secondary.
+- If more than one host:port pair is specified or the `replicaset` option is
+  used PyMongo will treat the specified host:port pair(s) as a seed list and
+  connect using replica set behavior.
+
+.. warning:: The default subtype for :class:`~bson.binary.Binary` has changed
+             from :const:`~bson.binary.OLD_BINARY_SUBTYPE` (2) to
+             :const:`~bson.binary.BINARY_SUBTYPE` (0).
+
+Issues Resolved
+...............
+
+See the `PyMongo 2.0 release notes in JIRA`_ for the list of resolved issues in this release.
+
+.. _PyMongo 2.0 release notes in JIRA: https://jira.mongodb.org/secure/ReleaseNote.jspa?projectId=10004&version=10274
+
 Changes in Version 1.11
 -----------------------
 
