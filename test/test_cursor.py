@@ -176,6 +176,48 @@ class TestCursor(unittest.TestCase):
         cursor_count(db.test.find().batch_size(100).limit(10), 10)
         cursor_count(db.test.find().batch_size(500).limit(10), 10)
 
+    def test_limit_and_batch_size(self):
+        db = self.db
+        db.test.drop()
+        for x in range(500):
+            db.test.save({"x": x})
+
+        curs = db.test.find().limit(0).batch_size(10)
+        curs.next()
+        self.assertEquals(10, curs._Cursor__retrieved)
+
+        curs = db.test.find().limit(-2).batch_size(0)
+        curs.next()
+        self.assertEquals(2, curs._Cursor__retrieved)
+
+        curs = db.test.find().limit(-4).batch_size(5)
+        curs.next()
+        self.assertEquals(4, curs._Cursor__retrieved)
+
+        curs = db.test.find().limit(50).batch_size(500)
+        curs.next()
+        self.assertEquals(50, curs._Cursor__retrieved)
+
+        curs = db.test.find().batch_size(500)
+        curs.next()
+        self.assertEquals(500, curs._Cursor__retrieved)
+
+        curs = db.test.find().limit(50)
+        curs.next()
+        self.assertEquals(50, curs._Cursor__retrieved)
+
+        # these two might be shaky, as the default
+        # is set by the server. as of 2.0.0-rc0, 101
+        # or 1MB (whichever is smaller) is default
+        # for queries without ntoreturn
+        curs = db.test.find()
+        curs.next()
+        self.assertEquals(101, curs._Cursor__retrieved)
+
+        curs = db.test.find().limit(0).batch_size(0)
+        curs.next()
+        self.assertEquals(101, curs._Cursor__retrieved)
+
     def test_skip(self):
         db = self.db
 
@@ -341,7 +383,13 @@ class TestCursor(unittest.TestCase):
             break
         self.assertRaises(InvalidOperation, a.where, 'this.x < 3')
 
-    def test_kill_cursors(self):
+    def test_kill_cursors_implicit(self):
+        # Only CPython does reference counting garbage collection.
+        if (sys.platform.startswith('java') or
+            sys.platform == 'cli' or
+            'PyPy' in sys.version):
+            raise SkipTest()
+
         db = self.db
         db.drop_collection("test")
 
@@ -352,6 +400,7 @@ class TestCursor(unittest.TestCase):
             test.insert({"i": i})
         self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
 
+        # Automatically closed by the server (limit == -1).
         for _ in range(10):
             db.test.find_one()
         self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
@@ -366,9 +415,44 @@ class TestCursor(unittest.TestCase):
             break
         self.assertNotEqual(c, db.command("cursorInfo")["clientCursors_size"])
 
+        # Explicitly close (won't work with PyPy and Jython).
         del a
         self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
 
+        # Automatically closed by the server since the entire
+        # result was returned.
+        a = db.test.find().limit(10)
+        for x in a:
+            break
+        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
+
+    def test_kill_cursors_explicit(self):
+        db = self.db
+        db.drop_collection("test")
+
+        c = db.command("cursorInfo")["clientCursors_size"]
+
+        test = db.test
+        for i in range(10000):
+            test.insert({"i": i})
+        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
+
+        # Automatically closed by the server (limit == -1).
+        for _ in range(10):
+            db.test.find_one()
+        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
+
+        a = db.test.find()
+        for x in a:
+            break
+        self.assertNotEqual(c, db.command("cursorInfo")["clientCursors_size"])
+
+        # Explicitly close (should work with all interpreter implementations).
+        a.close()
+        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
+
+        # Automatically closed by the server since the entire
+        # result was returned.
         a = db.test.find().limit(10)
         for x in a:
             break
@@ -660,6 +744,12 @@ class TestCursor(unittest.TestCase):
 
         self.assertRaises(AttributeError, set_coll)
 
+    def test_get_more(self):
+        db = self.db
+        db.drop_collection("test")
+        db.test.insert([{'i': i} for i in range(10)])
+        self.assertEqual(10, len(list(db.test.find().batch_size(5))))
+
     def test_tailable(self):
         db = self.db
         db.drop_collection("test")
@@ -741,7 +831,7 @@ class TestCursor(unittest.TestCase):
         for _ in range(100):
             self.db.test.insert({})
 
-        c1  = self.db.test.find()
+        c1 = self.db.test.find()
         exec """
 with self.db.test.find() as c2:
     self.assertTrue(c2.alive)

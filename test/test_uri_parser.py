@@ -71,19 +71,24 @@ class TestURI(unittest.TestCase):
         self.assertEqual([('::1', 27017)], split_hosts('[::1]'))
 
     def test_split_options(self):
-        # This should remind us to write tests for these if
-        # they are ever supported.
-        self.assertRaises(UnsupportedOption, split_options,
-                          'connectTimeoutMS=500')
-        self.assertRaises(UnsupportedOption, split_options,
-                          'socketTimeoutMS=500')
-
         self.assertRaises(ConfigurationError, split_options, 'foo')
         self.assertRaises(ConfigurationError, split_options, 'foo=bar')
         self.assertRaises(ConfigurationError, split_options, 'foo=bar;foo')
-        self.assertRaises(ConfigurationError, split_options, 'w=foo')
-        self.assertRaises(ConfigurationError, split_options, 'w=5.5')
-        self.assert_(split_options, 'w=5')
+        self.assertRaises(ConfigurationError, split_options, 'socketTimeoutMS=foo')
+        self.assertRaises(ConfigurationError, split_options, 'socketTimeoutMS=0.0')
+        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=foo')
+        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=0.0')
+        self.assert_(split_options, 'socketTimeoutMS=300')
+        self.assert_(split_options, 'connectTimeoutMS=300')
+        self.assertEquals({'sockettimeoutms': 0.3}, split_options('socketTimeoutMS=300'))
+        self.assertEquals({'sockettimeoutms': 0.0001}, split_options('socketTimeoutMS=0.1'))
+        self.assertEquals({'connecttimeoutms': 0.3}, split_options('connectTimeoutMS=300'))
+        self.assertEquals({'connecttimeoutms': 0.0001}, split_options('connectTimeoutMS=0.1'))
+        self.assert_(split_options, 'connectTimeoutMS=300')
+        self.assertTrue(isinstance(split_options('w=5')['w'], int))
+        self.assertTrue(isinstance(split_options('w=5.5')['w'], basestring))
+        self.assert_(split_options, 'w=foo')
+        self.assert_(split_options, 'w=majority')
         self.assertRaises(ConfigurationError, split_options, 'wtimeoutms=foo')
         self.assertRaises(ConfigurationError, split_options, 'wtimeoutms=5.5')
         self.assert_(split_options, 'wtimeoutms=500')

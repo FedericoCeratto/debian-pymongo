@@ -55,6 +55,9 @@ def _create_property(field_name, docstring,
         if closed_only and not self._closed:
             raise AttributeError("can only get %r on a closed file" %
                                  field_name)
+        # Protect against PHP-237
+        if field_name == 'length':
+            return self._file.get(field_name, 0)
         return self._file.get(field_name, None)
 
     def setter(self, value):
@@ -218,7 +221,7 @@ class GridIn(object):
         """
         if not self._closed:
             self.__flush()
-            self._closed = True
+            object.__setattr__(self, "_closed", True)
 
     def write(self, data):
         """Write data to the file. There is no return value.

@@ -16,6 +16,7 @@
 
 import warnings
 
+from bson.binary import UUID_SUBTYPE
 from bson.code import Code
 from bson.dbref import DBRef
 from bson.son import SON
@@ -58,9 +59,11 @@ class Database(common.BaseObject):
 
         .. mongodoc:: databases
         """
-        super(Database, self).__init__(slave_okay=connection.slave_okay,
-                                       safe=connection.safe,
-                                       **(connection.get_lasterror_options()))
+        super(Database,
+              self).__init__(slave_okay=connection.slave_okay,
+                             read_preference=connection.read_preference,
+                             safe=connection.safe,
+                             **(connection.get_lasterror_options()))
 
         if not isinstance(name, basestring):
             raise TypeError("name must be an instance of basestring")
@@ -265,7 +268,8 @@ class Database(common.BaseObject):
         return son
 
     def command(self, command, value=1,
-                check=True, allowable_errors=[], **kwargs):
+                check=True, allowable_errors=[],
+                uuid_subtype=UUID_SUBTYPE, **kwargs):
         """Issue a MongoDB command.
 
         Send command `command` to the database and return the
@@ -308,6 +312,8 @@ class Database(common.BaseObject):
             :class:`~pymongo.errors.OperationFailure` if there are any
           - `allowable_errors`: if `check` is ``True``, error messages
             in this list will be ignored by error-checking
+          - `uuid_subtype` (optional): The BSON binary subtype to use
+            for a UUID used in this command.
           - `**kwargs` (optional): additional keyword arguments will
             be added to the command document before it is sent
 
@@ -324,6 +330,8 @@ class Database(common.BaseObject):
         if isinstance(command, basestring):
             command = SON([(command, value)])
 
+        use_master = kwargs.pop('_use_master', True)
+
         fields = kwargs.get('fields')
         if fields is not None and not isinstance(fields, dict):
                 kwargs['fields'] = helpers._fields_list_to_dict(fields)
@@ -331,11 +339,12 @@ class Database(common.BaseObject):
         command.update(kwargs)
 
         result = self["$cmd"].find_one(command,
-                                       _must_use_master=True,
-                                       _is_command=True)
+                                       _must_use_master=use_master,
+                                       _is_command=True,
+                                       _uuid_subtype = uuid_subtype)
 
         if check:
-            msg = "command %r failed: %%s" % command
+            msg = "command %s failed: %%s" % repr(command).replace("%", "%%")
             helpers._check_command_response(result, self.connection.disconnect,
                                             msg, allowable_errors)
 
@@ -484,9 +493,10 @@ class Database(common.BaseObject):
         error that occurred.
         """
         error = self.command("getlasterror")
-        if error.get("err", 0) is None:
+        error_msg = error.get("err", "")
+        if error_msg is None:
             return None
-        if error["err"].startswith("not master"):
+        if error_msg.startswith("not master"):
             self.__connection.disconnect()
         return error
 

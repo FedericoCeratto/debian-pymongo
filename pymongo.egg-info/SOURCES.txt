@@ -69,6 +69,8 @@ doc/api/pymongo/max_key.rst
 doc/api/pymongo/message.rst
 doc/api/pymongo/min_key.rst
 doc/api/pymongo/objectid.rst
+doc/api/pymongo/pool.rst
+doc/api/pymongo/replica_set_connection.rst
 doc/api/pymongo/son.rst
 doc/api/pymongo/son_manipulator.rst
 doc/api/pymongo/timestamp.rst
@@ -102,6 +104,8 @@ pymongo/max_key.py
 pymongo/message.py
 pymongo/min_key.py
 pymongo/objectid.py
+pymongo/pool.py
+pymongo/replica_set_connection.py
 pymongo/son.py
 pymongo/son_manipulator.py
 pymongo/timestamp.py
@@ -131,12 +135,17 @@ test/test_objectid.py
 test/test_paired.py
 test/test_pooling.py
 test/test_pymongo.py
+test/test_replica_set_connection.py
 test/test_son.py
 test/test_son_manipulator.py
+test/test_ssl.py
 test/test_threads.py
+test/test_threads_replica_set_connection.py
 test/test_timestamp.py
 test/test_uri_parser.py
 test/version.py
+test/replica/replset_tools.py
+test/replica/test_replica_set.py
 tools/README.rst
 tools/auto_reconnect_test.py
 tools/benchmark.py

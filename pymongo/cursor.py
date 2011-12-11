@@ -17,7 +17,8 @@
 from bson.code import Code
 from bson.son import SON
 from pymongo import (helpers,
-                     message)
+                     message,
+                     ReadPreference)
 from pymongo.errors import (InvalidOperation,
                             AutoReconnect)
 
@@ -42,7 +43,9 @@ class Cursor(object):
                  timeout=True, snapshot=False, tailable=False, sort=None,
                  max_scan=None, as_class=None, slave_okay=False,
                  await_data=False, partial=False, manipulate=True,
-                 _must_use_master=False, _is_command=False, **kwargs):
+                 read_preference=ReadPreference.PRIMARY,
+                 _must_use_master=False, _is_command=False,
+                 _uuid_subtype=None, **kwargs):
         """Create a new cursor.
 
         Should not be called directly by application developers - see
@@ -110,9 +113,11 @@ class Cursor(object):
         self.__as_class = as_class
         self.__slave_okay = slave_okay
         self.__manipulate = manipulate
+        self.__read_preference = read_preference
         self.__tz_aware = collection.database.connection.tz_aware
         self.__must_use_master = _must_use_master
         self.__is_command = _is_command
+        self.__uuid_subtype = _uuid_subtype or collection.uuid_subtype
         self.__query_flags = 0
 
         self.__data = []
@@ -175,8 +180,10 @@ class Cursor(object):
         copy.__await_data = self.__await_data
         copy.__partial = self.__partial
         copy.__manipulate = self.__manipulate
+        copy.__read_preference = self.__read_preference
         copy.__must_use_master = self.__must_use_master
         copy.__is_command = self.__is_command
+        copy.__uuid_subtype = self.__uuid_subtype
         copy.__query_flags = self.__query_flags
         copy.__kwargs = self.__kwargs
         return copy
@@ -191,6 +198,13 @@ class Cursor(object):
             else:
                 connection.close_cursor(self.__id)
         self.__killed = True
+
+    def close(self):
+        """Explicitly close this cursor. Required for PyPy, Jython and
+        other Python implementations that don't use reference counting
+        garbage collection.
+        """
+        self.__die()
 
     def __query_spec(self):
         """Get the spec to use for a query.
@@ -216,7 +230,7 @@ class Cursor(object):
         options = self.__query_flags
         if self.__tailable:
             options |= _QUERY_OPTIONS["tailable_cursor"]
-        if self.__slave_okay:
+        if self.__slave_okay or self.__read_preference:
             options |= _QUERY_OPTIONS["slave_okay"]
         if not self.__timeout:
             options |= _QUERY_OPTIONS["no_timeout"]
@@ -438,6 +452,12 @@ class Cursor(object):
         `with_limit_and_skip` to ``True`` if that is the desired behavior.
         Raises :class:`~pymongo.errors.OperationFailure` on a database error.
 
+        With :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+        or :class:`~pymongo.master_slave_connection.MasterSlaveConnection`,
+        if `read_preference` is not :attr:`pymongo.ReadPreference.PRIMARY` or
+        (deprecated) `slave_okay` is `True` the count command will be sent to
+        a secondary or slave.
+
         :Parameters:
           - `with_limit_and_skip` (optional): take any :meth:`limit` or
             :meth:`skip` that has been applied to this cursor into account when
@@ -453,15 +473,20 @@ class Cursor(object):
         """
         command = {"query": self.__spec, "fields": self.__fields}
 
+        use_master = not self.__slave_okay and not self.__read_preference
+        command['_use_master'] = use_master
+
         if with_limit_and_skip:
             if self.__limit:
                 command["limit"] = self.__limit
             if self.__skip:
                 command["skip"] = self.__skip
 
-        r = self.__collection.database.command("count", self.__collection.name,
-                                               allowable_errors=["ns missing"],
-                                               **command)
+        database = self.__collection.database
+        r = database.command("count", self.__collection.name,
+                             allowable_errors=["ns missing"],
+                             uuid_subtype = self.__uuid_subtype,
+                             **command)
         if r.get("errmsg", "") == "ns missing":
             return 0
         return int(r["n"])
@@ -472,6 +497,12 @@ class Cursor(object):
 
         Raises :class:`TypeError` if `key` is not an instance of
         :class:`basestring`.
+
+        With :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+        or :class:`~pymongo.master_slave_connection.MasterSlaveConnection`,
+        if `read_preference` is not :attr:`pymongo.ReadPreference.PRIMARY` or
+        (deprecated) `slave_okay` is `True` the distinct command will be sent
+        to a secondary or slave.
 
         :Parameters:
           - `key`: name of key for which we want to get the distinct values
@@ -489,9 +520,14 @@ class Cursor(object):
         if self.__spec:
             options["query"] = self.__spec
 
-        return self.__collection.database.command("distinct",
-                                                  self.__collection.name,
-                                                  **options)["values"]
+        use_master = not self.__slave_okay and not self.__read_preference
+        options['_use_master'] = use_master
+
+        database = self.__collection.database
+        return database.command("distinct",
+                                self.__collection.name,
+                                uuid_subtype = self.__uuid_subtype,
+                                **options)["values"]
 
     def explain(self):
         """Returns an explain plan record for this cursor.
@@ -567,6 +603,7 @@ class Cursor(object):
         """
         db = self.__collection.database
         kwargs = {"_must_use_master": self.__must_use_master}
+        kwargs["read_preference"] = self.__read_preference
         if self.__connection_id is not None:
             kwargs["_connection_to_use"] = self.__connection_id
         kwargs.update(self.__kwargs)
@@ -611,11 +648,18 @@ class Cursor(object):
             return len(self.__data)
 
         if self.__id is None:  # Query
+            ntoreturn = self.__batch_size
+            if self.__limit:
+                if self.__batch_size:
+                    ntoreturn = min(self.__limit, self.__batch_size)
+                else:
+                    ntoreturn = self.__limit
             self.__send_message(
                 message.query(self.__query_options(),
                               self.__collection.full_name,
-                              self.__skip, self.__limit,
-                              self.__query_spec(), self.__fields))
+                              self.__skip, ntoreturn,
+                              self.__query_spec(), self.__fields,
+                              self.__uuid_subtype))
             if not self.__id:
                 self.__killed = True
         elif self.__id:  # Get More
