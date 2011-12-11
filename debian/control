@@ -26,7 +26,7 @@ Description: Python interface to the MongoDB document-oriented database
 
 Package: python-pymongo-doc
 Architecture: all
-Depends: ${misc:Depends}, libjs-jquery
+Depends: ${misc:Depends}, libjs-jquery, libjs-underscore
 Section: doc
 Description: Python interface to the MongoDB document-oriented database (documentation)
  MongoDB is a high-performance, open source, schema-free
