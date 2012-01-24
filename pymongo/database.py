@@ -16,7 +16,7 @@
 
 import warnings
 
-from bson.binary import UUID_SUBTYPE
+from bson.binary import OLD_UUID_SUBTYPE
 from bson.code import Code
 from bson.dbref import DBRef
 from bson.son import SON
@@ -269,7 +269,7 @@ class Database(common.BaseObject):
 
     def command(self, command, value=1,
                 check=True, allowable_errors=[],
-                uuid_subtype=UUID_SUBTYPE, **kwargs):
+                uuid_subtype=OLD_UUID_SUBTYPE, **kwargs):
         """Issue a MongoDB command.
 
         Send command `command` to the database and return the
@@ -330,7 +330,14 @@ class Database(common.BaseObject):
         if isinstance(command, basestring):
             command = SON([(command, value)])
 
-        use_master = kwargs.pop('_use_master', True)
+        extra_opts = {
+            'read_preference': kwargs.pop('read_preference',
+                                          self.read_preference),
+            'slave_okay': kwargs.pop('slave_okay', self.slave_okay),
+            '_must_use_master': kwargs.pop('_use_master', True),
+            '_is_command': True,
+            '_uuid_subtype': uuid_subtype
+        }
 
         fields = kwargs.get('fields')
         if fields is not None and not isinstance(fields, dict):
@@ -338,10 +345,7 @@ class Database(common.BaseObject):
 
         command.update(kwargs)
 
-        result = self["$cmd"].find_one(command,
-                                       _must_use_master=use_master,
-                                       _is_command=True,
-                                       _uuid_subtype = uuid_subtype)
+        result = self["$cmd"].find_one(command, **extra_opts)
 
         if check:
             msg = "command %s failed: %%s" % repr(command).replace("%", "%%")

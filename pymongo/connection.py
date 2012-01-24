@@ -165,6 +165,12 @@ class _Pool(threading.local):
             self.sock = (pid, self.connect(host, port))
             return (self.sock[1], False)
 
+    def discard_socket(self):
+        """Close and discard the active socket.
+        """
+        if self.sock:
+            self.sock[1].close()
+            self.sock = None
 
     def return_socket(self):
         if self.sock is not None and self.sock[0] == os.getpid():
@@ -264,7 +270,7 @@ class Connection(common.BaseObject):
             instead.
 
         .. seealso:: :meth:`end_request`
-        .. versionchanged:: 2.0.1+
+        .. versionchanged:: 2.1
            Support `w` = integer or string.
            Added `ssl` option.
            DEPRECATED slave_okay/slaveOk.
@@ -714,7 +720,7 @@ class Connection(common.BaseObject):
         could lead to unexpected results.
 
         .. seealso:: :meth:`end_request`
-        .. versionadded:: 2.0.1+
+        .. versionadded:: 2.1
         """
         self.disconnect()
 
@@ -827,7 +833,13 @@ class Connection(common.BaseObject):
         """
         message = ""
         while len(message) < length:
-            chunk = sock.recv(length - len(message))
+            try:
+                chunk = sock.recv(length - len(message))
+            except:
+                # If recv was interrupted, discard the socket
+                # and re-raise the exception.
+                self.__pool.discard_socket()
+                raise
             if chunk == "":
                 raise ConnectionFailure("connection closed")
             message += chunk
@@ -877,7 +889,11 @@ class Connection(common.BaseObject):
                 raise AutoReconnect(str(e))
         finally:
             if "network_timeout" in kwargs:
-                sock.settimeout(self.__net_timeout)
+                try:
+                    sock.settimeout(self.__net_timeout)
+                except socket.error:
+                    # There was an exception and we've closed the socket
+                    pass
 
     def start_request(self):
         """DEPRECATED all operations will start a request.

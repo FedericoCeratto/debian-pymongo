@@ -16,10 +16,11 @@
 
 import datetime
 import os
+import signal
 import sys
 import time
+import thread
 import unittest
-import warnings
 sys.path[0:0] = [""]
 
 from nose.plugins.skip import SkipTest
@@ -82,11 +83,11 @@ class TestConnection(unittest.TestCase):
     def test_host_w_port(self):
         self.assert_(Connection("%s:%d" % (self.host, self.port)))
         self.assertRaises(ConnectionFailure, Connection,
-                          "%s:1234567" % self.host, self.port)
+                          "%s:1234567" % (self.host,), self.port)
 
     def test_repr(self):
         self.assertEqual(repr(Connection(self.host, self.port)),
-                         "Connection('%s', %s)" % (self.host, self.port))
+                         "Connection('%s', %d)" % (self.host, self.port))
 
     def test_getters(self):
         self.assertEqual(Connection(self.host, self.port).host, self.host)
@@ -164,7 +165,7 @@ class TestConnection(unittest.TestCase):
         self.assertEqual("bar", c.pymongo_test1.test.find_one()["foo"])
 
         c.copy_database("pymongo_test", "pymongo_test2",
-                        "%s:%s" % (self.host, self.port))
+                        "%s:%d" % (self.host, self.port))
 
         self.assert_("pymongo_test2" in c.database_names())
         self.assertEqual("bar", c.pymongo_test2.test.find_one()["foo"])
@@ -238,7 +239,7 @@ class TestConnection(unittest.TestCase):
     def test_from_uri(self):
         c = Connection(self.host, self.port)
 
-        self.assertEqual(c, Connection("mongodb://%s:%s" %
+        self.assertEqual(c, Connection("mongodb://%s:%d" %
                                        (self.host, self.port)))
 
         c.admin.system.users.remove({})
@@ -249,33 +250,32 @@ class TestConnection(unittest.TestCase):
         c.pymongo_test.add_user("user", "pass")
 
         self.assertRaises(ConfigurationError, Connection,
-                          "mongodb://foo:bar@%s:%s" % (self.host, self.port))
+                          "mongodb://foo:bar@%s:%d" % (self.host, self.port))
         self.assertRaises(ConfigurationError, Connection,
-                          "mongodb://admin:bar@%s:%s" % (self.host, self.port))
+                          "mongodb://admin:bar@%s:%d" % (self.host, self.port))
         self.assertRaises(ConfigurationError, Connection,
-                          "mongodb://user:pass@%s:%s" % (self.host, self.port))
-        Connection("mongodb://admin:pass@%s:%s" % (self.host, self.port))
+                          "mongodb://user:pass@%s:%d" % (self.host, self.port))
+        Connection("mongodb://admin:pass@%s:%d" % (self.host, self.port))
 
         self.assertRaises(ConfigurationError, Connection,
-                          "mongodb://admin:pass@%s:%s/pymongo_test" %
+                          "mongodb://admin:pass@%s:%d/pymongo_test" %
                           (self.host, self.port))
         self.assertRaises(ConfigurationError, Connection,
-                          "mongodb://user:foo@%s:%s/pymongo_test" %
+                          "mongodb://user:foo@%s:%d/pymongo_test" %
                           (self.host, self.port))
-        Connection("mongodb://user:pass@%s:%s/pymongo_test" %
+        Connection("mongodb://user:pass@%s:%d/pymongo_test" %
                    (self.host, self.port))
 
-        self.assert_(Connection("mongodb://%s:%s" %
+        self.assert_(Connection("mongodb://%s:%d" %
                                 (self.host, self.port),
                                 slave_okay=True).slave_okay)
-        self.assert_(Connection("mongodb://%s:%s/?slaveok=true;w=2" %
+        self.assert_(Connection("mongodb://%s:%d/?slaveok=true;w=2" %
                                 (self.host, self.port)).slave_okay)
         c.admin.system.users.remove({})
         c.pymongo_test.system.users.remove({})
 
     def test_fork(self):
-        """Test using a connection before and after a fork.
-        """
+        # Test using a connection before and after a fork.
         if sys.platform == "win32":
             raise SkipTest()
 
@@ -369,19 +369,21 @@ class TestConnection(unittest.TestCase):
 
     def test_network_timeout(self):
         no_timeout = Connection(self.host, self.port)
-        timeout = Connection(self.host, self.port, network_timeout=0.1)
+        timeout_sec = 1
+        timeout = Connection(self.host, self.port, network_timeout=timeout_sec)
 
         no_timeout.pymongo_test.drop_collection("test")
         no_timeout.pymongo_test.test.insert({"x": 1}, safe=True)
 
+        # A $where clause that takes a second longer than the timeout
         where_func = """function (doc) {
-  var d = new Date().getTime() + 200;
+  var d = new Date().getTime() + (%f + 1) * 1000;;
   var x = new Date().getTime();
   while (x < d) {
     x = new Date().getTime();
   }
   return true;
-}"""
+}""" % timeout_sec
 
         def get_x(db):
             return db.test.find().where(where_func).next()["x"]
@@ -418,10 +420,13 @@ class TestConnection(unittest.TestCase):
             raise SkipTest()
 
         # Try a few simple things
-        connection = Connection("mongodb://[::1]:27017")
-        connection = Connection("mongodb://[::1]:27017/?slaveOk=true")
-        connection = Connection("[::1]:27017,localhost:27017")
-        connection = Connection("localhost:27017,[::1]:27017")
+        connection = Connection("mongodb://[::1]:%d" % (self.port,))
+        connection = Connection("mongodb://[::1]:%d/"
+                                "?slaveOk=true" % (self.port,))
+        connection = Connection("[::1]:%d,"
+                                "localhost:%d" % (self.port, self.port))
+        connection = Connection("localhost:%d,"
+                                "[::1]:%d" % (self.port, self.port))
         connection.pymongo_test.test.save({"dummy": u"object"})
         connection.pymongo_test_bernie.test.save({"dummy": u"object"})
 
@@ -476,6 +481,69 @@ with get_connection() as connection:
         self.assertEqual(None, connection._Connection__pool.sock)
         self.assertEqual(0, len(connection._Connection__pool.sockets))
 
+    def test_interrupt_signal(self):
+        # Test fix for PYTHON-294 -- make sure Connection closes its
+        # socket if it gets an interrupt while waiting to recv() from it.
+        c = get_connection()
+        db = c.pymongo_test
+
+        # A $where clause which takes 1.5 sec to execute
+        where = '''function() {
+            var d = new Date((new Date()).getTime() + 1.5 * 1000);
+            while (d > (new Date())) { }; return true;
+        }'''
+
+        # Need exactly 1 document so find() will execute its $where clause once
+        db.drop_collection('foo')
+        db.foo.insert({'_id': 1}, safe=True)
+
+        old_signal_handler = None
+
+        try:
+            # Platform-specific hacks for raising a KeyboardInterrupt on the main
+            # thread while find() is in-progress: On Windows, SIGALRM is unavailable
+            # so we use second thread. In our Bamboo setup on Linux, the thread
+            # technique causes an error in the test at sock.recv():
+            #    TypeError: 'int' object is not callable
+            # We don't know what causes this in Bamboo, so we hack around it.
+            if sys.platform == 'win32':
+                def interrupter():
+                    time.sleep(0.25)
+
+                    # Raises KeyboardInterrupt in the main thread
+                    thread.interrupt_main()
+
+                thread.start_new_thread(interrupter, ())
+            else:
+                # Convert SIGALRM to SIGINT -- it's hard to schedule a SIGINT for one
+                # second in the future, but easy to schedule SIGALRM.
+                def sigalarm(num, frame):
+                    raise KeyboardInterrupt
+
+                old_signal_handler = signal.signal(signal.SIGALRM, sigalarm)
+                signal.alarm(1)
+
+            raised = False
+            try:
+                # Will be interrupted by a KeyboardInterrupt.
+                db.foo.find({'$where': where}).next()
+            except KeyboardInterrupt:
+                raised = True
+
+            # Can't use self.assertRaises() because it doesn't catch system
+            # exceptions
+            self.assert_(raised, "Didn't raise expected KeyboardInterrupt")
+
+            # Raises AssertionError due to PYTHON-294 -- Mongo's response to the
+            # previous find() is still waiting to be read on the socket, so the
+            # request id's don't match.
+            self.assertEqual(
+                {'_id': 1},
+                db.foo.find().next()
+            )
+        finally:
+            if old_signal_handler:
+                signal.signal(signal.SIGALRM, old_signal_handler)
 
 if __name__ == "__main__":
     unittest.main()

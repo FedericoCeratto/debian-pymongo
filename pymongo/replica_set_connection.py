@@ -32,7 +32,6 @@ attribute-style access:
 """
 
 import datetime
-import random
 import socket
 import struct
 import sys
@@ -180,7 +179,7 @@ class ReplicaSetConnection(common.BaseObject):
           - `slave_okay` or `slaveOk` (deprecated): Use `read_preference`
             instead.
 
-        .. versionadded:: 2.0.1+
+        .. versionadded:: 2.1
         """
         self.__max_pool_size = max_pool_size
         self.__document_class = document_class
@@ -528,8 +527,9 @@ class ReplicaSetConnection(common.BaseObject):
                 self.__hosts = hosts
                 break
         else:
-            # Couldn't find a suitable host.
-            raise AutoReconnect(', '.join(errors))
+            if errors:
+                raise AutoReconnect(', '.join(errors))
+            raise ConfigurationError('No suitable hosts found')
 
         self.__update_pools()
 
@@ -736,6 +736,10 @@ class ReplicaSetConnection(common.BaseObject):
             if _connection_to_use in (None, -1):
                 self.disconnect()
             raise AutoReconnect(str(why))
+        except:
+            mongo['pool'].discard_socket()
+            raise
+
         mongo['pool'].return_socket()
 
     def __send_and_receive(self, mongo, msg, **kwargs):
@@ -760,6 +764,9 @@ class ReplicaSetConnection(common.BaseObject):
             host, port = mongo['pool'].host
             mongo['pool'].discard_socket()
             raise AutoReconnect("%s:%d: %s" % (host, port, str(why)))
+        except:
+            mongo['pool'].discard_socket()
+            raise
 
     def _send_message_with_response(self, msg, _connection_to_use=None,
                                     _must_use_master=False, **kwargs):
@@ -792,10 +799,8 @@ class ReplicaSetConnection(common.BaseObject):
             raise
 
         errors = []
-        for conn_id in random.sample(range(0, len(self.__readers)),
-                                     len(self.__readers)):
+        for host in helpers.shuffled(self.__readers):
             try:
-                host = self.__readers[conn_id]
                 mongo = self.__pools[host]
                 return host, self.__send_and_receive(mongo, msg, **kwargs)
             except AutoReconnect, why:

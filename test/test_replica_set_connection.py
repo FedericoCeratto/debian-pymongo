@@ -16,9 +16,11 @@
 
 import datetime
 import os
+import signal
 import sys
 import socket
 import time
+import thread
 import unittest
 sys.path[0:0] = [""]
 
@@ -39,15 +41,31 @@ from pymongo.errors import (AutoReconnect,
 from test import version
 
 host = os.environ.get("DB_IP", socket.gethostname())
-port = os.environ.get("DB_PORT", 27017)
+port = int(os.environ.get("DB_PORT", 27017))
 pair = '%s:%d' % (host, port)
+
+class TestReplicaSetConnectionAgainstStandalone(unittest.TestCase):
+    """This is a funny beast -- we want to run tests for ReplicaSetConnection
+    but only if the database at DB_IP and DB_PORT is a standalone.
+    """
+    def setUp(self):
+        conn = Connection(pair)
+        response = conn.admin.command('ismaster')
+        if 'setName' in response:
+            raise SkipTest()
+
+    def test_connect(self):
+        self.assertRaises(ConfigurationError, ReplicaSetConnection,
+                          pair, replicaSet='anything',
+                          connectTimeoutMS=600)
+
 
 class TestConnectionReplicaSetBase(unittest.TestCase):
     def setUp(self):
         conn = Connection(pair)
         response = conn.admin.command('ismaster')
         if 'setName' in response:
-            self.name = response['setName']
+            self.name = str(response['setName'])
             self.w = len(response['hosts'])
             self.hosts = set([_partition_node(h)
                               for h in response["hosts"]])
@@ -138,14 +156,14 @@ class TestConnection(TestConnectionReplicaSetBase):
         db = c.pymongo_test
         db.test.remove({})
         self.assertEqual(0, db.test.count())
-        db.test.insert({'foo': 'x'}, safe=True)
+        db.test.insert({'foo': 'x'}, safe=True, w=self.w)
         self.assertEqual(1, db.test.count())
 
         cursor = db.test.find()
         self.assertEqual('x', cursor.next()['foo'])
         # Ensure we read from the primary
         self.assertEqual(c.primary, cursor._Cursor__connection_id)
-        time.sleep(1)
+
         cursor = db.test.find(read_preference=ReadPreference.SECONDARY)
         self.assertEqual('x', cursor.next()['foo'])
         # Ensure we didn't read from the primary
@@ -381,20 +399,21 @@ class TestConnection(TestConnectionReplicaSetBase):
 
     def test_network_timeout(self):
         no_timeout = self._get_connection()
-        timeout = self._get_connection(socketTimeoutMS=100)
+        timeout_sec = 1
+        timeout = self._get_connection(socketTimeoutMS=timeout_sec*1000)
 
         no_timeout.pymongo_test.drop_collection("test")
         no_timeout.pymongo_test.test.insert({"x": 1}, safe=True)
-        time.sleep(1)
 
+        # A $where clause that takes a second longer than the timeout
         where_func = """function (doc) {
-  var d = new Date().getTime() + 200;
+  var d = new Date().getTime() + (%f + 1) * 1000;;
   var x = new Date().getTime();
   while (x < d) {
     x = new Date().getTime();
   }
   return true;
-}"""
+}""" % timeout_sec
 
         def get_x(db):
             return db.test.find().where(where_func).next()["x"]
@@ -427,20 +446,23 @@ class TestConnection(TestConnectionReplicaSetBase):
 
     def test_ipv6(self):
         try:
-            connection = ReplicaSetConnection("[::1]:27017", replicaSet=self.name)
+            connection = ReplicaSetConnection("[::1]:%d" % (port,),
+                                              replicaSet=self.name)
         except:
             # Either mongod was started without --ipv6
             # or the OS doesn't support it (or both).
             raise SkipTest()
 
         # Try a few simple things
-        connection = ReplicaSetConnection("mongodb://[::1]:27017",
+        connection = ReplicaSetConnection("mongodb://[::1]:%d" % (port,),
                                           replicaSet=self.name)
-        uri = "mongodb://[::1]:27017/?slaveOk=true;replicaSet=" + self.name
-        connection = ReplicaSetConnection(uri)
-        connection = ReplicaSetConnection("[::1]:27017,localhost:27017",
+        connection = ReplicaSetConnection("mongodb://[::1]:%d/?slaveOk=true;"
+                                          "replicaSet=%s" % (port, self.name))
+        connection = ReplicaSetConnection("[::1]:%d,localhost:"
+                                          "%d" % (port, port),
                                           replicaSet=self.name)
-        connection = ReplicaSetConnection("localhost:27017,[::1]:27017",
+        connection = ReplicaSetConnection("localhost:%d,[::1]:"
+                                          "%d" % (port, port),
                                           replicaSet=self.name)
         connection.pymongo_test.test.save({"dummy": u"object"})
         connection.pymongo_test_bernie.test.save({"dummy": u"object"})
@@ -493,6 +515,71 @@ class TestConnection(TestConnectionReplicaSetBase):
         for x in a:
             break
         self.assertEqual(start, get_cursor_counts())
+
+    def test_interrupt_signal(self):
+        # Test fix for PYTHON-294 -- make sure Connection closes its
+        # socket if it gets an interrupt while waiting to recv() from it.
+        c = self._get_connection()
+        db = c.pymongo_test
+
+        # A $where clause which takes 1.5 sec to execute
+        where = '''function() {
+            var d = new Date((new Date()).getTime() + 1.5 * 1000);
+            while (d > (new Date())) { }; return true;
+        }'''
+
+        # Need exactly 1 document so find() will execute its $where clause once
+        db.drop_collection('foo')
+        db.foo.insert({'_id': 1}, safe=True)
+
+        old_signal_handler = None
+
+        try:
+            # Platform-specific hacks for raising a KeyboardInterrupt on the main
+            # thread while find() is in-progress: On Windows, SIGALRM is unavailable
+            # so we use second thread. In our Bamboo setup on Linux, the thread
+            # technique causes an error in the test at sock.recv():
+            #    TypeError: 'int' object is not callable
+            # We don't know what causes this in Bamboo, so we hack around it.
+            if sys.platform == 'win32':
+                def interrupter():
+                    time.sleep(0.25)
+
+                    # Raises KeyboardInterrupt in the main thread
+                    thread.interrupt_main()
+
+                thread.start_new_thread(interrupter, ())
+            else:
+                # Convert SIGALRM to SIGINT -- it's hard to schedule a SIGINT for one
+                # second in the future, but easy to schedule SIGALRM.
+                def sigalarm(num, frame):
+                    raise KeyboardInterrupt
+
+                old_signal_handler = signal.signal(signal.SIGALRM, sigalarm)
+                signal.alarm(1)
+
+            raised = False
+            try:
+                # Will be interrupted by a KeyboardInterrupt.
+                db.foo.find({'$where': where}).next()
+            except KeyboardInterrupt:
+                raised = True
+
+            # Can't use self.assertRaises() because it doesn't catch system
+            # exceptions
+            self.assert_(raised, "Didn't raise expected ConnectionFailure")
+
+            # Raises AssertionError due to PYTHON-294 -- Mongo's response to the
+            # previous find() is still waiting to be read on the socket, so the
+            # request id's don't match.
+            self.assertEqual(
+                {'_id': 1},
+                db.foo.find().next()
+            )
+        finally:
+            if old_signal_handler:
+                signal.signal(signal.SIGALRM, old_signal_handler)
+
 
 if __name__ == "__main__":
     unittest.main()

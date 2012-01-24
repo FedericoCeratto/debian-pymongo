@@ -484,18 +484,18 @@ class TestCollection(unittest.TestCase):
 
     def test_insert_find_one(self):
         db = self.db
-        db.test.remove({})
+        db.test.remove({}, safe=True)
         self.assertEqual(db.test.find().count(), 0)
         doc = {"hello": u"world"}
-        id = db.test.insert(doc)
+        id = db.test.insert(doc, safe=True)
         self.assertEqual(db.test.find().count(), 1)
         self.assertEqual(doc, db.test.find_one())
         self.assertEqual(doc["_id"], id)
         self.assert_(isinstance(id, ObjectId))
 
         def remove_insert_find_one(dict):
-            db.test.remove({})
-            db.test.insert(dict)
+            db.test.remove({}, safe=True)
+            db.test.insert(dict, safe=True)
             return db.test.find_one() == dict
 
         qcheck.check_unittest(self, remove_insert_find_one,
@@ -1684,11 +1684,11 @@ class TestCollection(unittest.TestCase):
         no_obj_error = "No matching object found"
         result = db.command('findAndModify', 'uuid',
                             allowable_errors=[no_obj_error],
+                            uuid_subtype=UUID_SUBTYPE,
                             query={'_id': uu},
                             update={'$set': {'i': 6}})
         self.assertEqual(None, result.get('value'))
         self.assertEqual(5, db.command('findAndModify', 'uuid',
-                                       uuid_subtype=OLD_UUID_SUBTYPE,
                                        update={'$set': {'i': 6}},
                                        query={'_id': uu})['value']['i'])
         self.assertEqual(6, db.command('findAndModify', 'uuid',
