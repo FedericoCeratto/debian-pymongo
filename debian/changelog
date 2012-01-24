@@ -1,8 +1,8 @@
-pymongo (2.1.1-1) UNRELEASED; urgency=low
+pymongo (2.1.1-1) unstable; urgency=low
 
   * New upstream release.
 
- -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 24 Jan 2012 20:31:44 +0000
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 24 Jan 2012 20:33:33 +0000
 
 pymongo (2.1-1) unstable; urgency=low
 
