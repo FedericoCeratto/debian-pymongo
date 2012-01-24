@@ -63,6 +63,8 @@ class Collection(common.BaseObject):
           - `**kwargs` (optional): additional keyword arguments will
             be passed as options for the create collection command
 
+        .. versionadded:: 2.1
+           uuid_subtype attribute
         .. versionchanged:: 1.5
            deprecating `options` in favor of kwargs
         .. versionadded:: 1.5
@@ -280,7 +282,7 @@ class Collection(common.BaseObject):
 
         .. note:: `continue_on_error` requires server version **>= 1.9.1**
 
-        .. versionadded:: 2.0.1+
+        .. versionadded:: 2.1
            Support for continue_on_error.
         .. versionadded:: 1.8
            Support for passing `getLastError` options as keyword
@@ -589,7 +591,7 @@ class Collection(common.BaseObject):
             this query, which will override the
             :class:`~pymongo.connection.Connection`-level default
           - `read_preference` (optional): The read preference for
-            this read operation. Only used with ReplicaSetConnection.
+            this query.
 
         .. note:: The `manipulate` parameter may default to False in
            a future release.
@@ -956,6 +958,8 @@ class Collection(common.BaseObject):
 
         return self.__database.command("group", group,
                                        uuid_subtype=self.__uuid_subtype,
+                                       read_preference=self.read_preference,
+                                       slave_okay=self.slave_okay,
                                        _use_master=use_master)["retval"]
 
     def rename(self, new_name, **kwargs):
@@ -1104,6 +1108,13 @@ class Collection(common.BaseObject):
         result documents in a list. Otherwise, returns the full
         response from the server to the `map reduce command`_.
 
+        With :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+        or :class:`~pymongo.master_slave_connection.MasterSlaveConnection`,
+        if the `read_preference` attribute of this instance is not set to
+        :attr:`pymongo.ReadPreference.PRIMARY` or the (deprecated)
+        `slave_okay` attribute of this instance is set to `True` the inline
+        map reduce will be run on a secondary or slave.
+
         :Parameters:
           - `map`: map function (as a JavaScript string)
           - `reduce`: reduce function (as a JavaScript string)
@@ -1120,15 +1131,20 @@ class Collection(common.BaseObject):
         .. versionadded:: 1.10
         """
 
-        response = self.__database.command("mapreduce", self.__name,
-                                           uuid_subtype=self.__uuid_subtype,
-                                           map=map, reduce=reduce,
-                                           out={"inline": 1}, **kwargs)
+        use_master = not self.slave_okay and not self.read_preference
+
+        res = self.__database.command("mapreduce", self.__name,
+                                      uuid_subtype=self.__uuid_subtype,
+                                      read_preference=self.read_preference,
+                                      slave_okay=self.slave_okay,
+                                      _use_master=use_master,
+                                      map=map, reduce=reduce,
+                                      out={"inline": 1}, **kwargs)
 
         if full_response:
-            return response
+            return res
         else:
-            return response.get("results")
+            return res.get("results")
 
     def find_and_modify(self, query={}, update=None, upsert=False, **kwargs):
         """Update and return an object.

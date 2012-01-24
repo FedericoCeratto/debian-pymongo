@@ -33,7 +33,7 @@ GEO2D = "2d"
 GEOHAYSTACK = "geoHaystack"
 """Index specifier for a 2-dimensional `haystack index`_.
 
-.. versionadded:: 2.0.1+
+.. versionadded:: 2.1
 
 .. note:: Geo-spatial indexing requires server version **>= 1.5.6+**.
 
@@ -91,7 +91,7 @@ class ReadPreference:
     SECONDARY = 1
     SECONDARY_ONLY = 2
 
-version_tuple = (2, 1)
+version_tuple = (2, 1, 1)
 
 def get_version_string():
     if version_tuple[-1] == '+':

@@ -1,6 +1,6 @@
 Metadata-Version: 1.0
 Name: pymongo
-Version: 2.1
+Version: 2.1.1
 Summary: Python driver for MongoDB <http://www.mongodb.org>
 Home-page: http://github.com/mongodb/mongo-python-driver
 Author: Bernie Hackett
@@ -62,7 +62,7 @@ Description: =======
         >>> import pymongo
         >>> connection = pymongo.Connection("localhost", 27017)
         >>> db = connection.test
-        >>> db.name()
+        >>> db.name
         u'test'
         >>> db.my_collection
         Collection(Database(Connection('localhost', 27017), u'test'), u'my_collection')
