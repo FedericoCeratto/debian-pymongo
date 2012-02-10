@@ -33,10 +33,9 @@ Depends: python-bson (= ${binary:Version}), ${shlibs:Depends}
  , ${misc:Depends}
 Recommends: python-gridfs (>= ${source:Version})
 Provides: ${python:Provides}
-Description: Python interface to the MongoDB document-oriented database
- MongoDB is a high-performance, open source, schema-free
- document-oriented data store. Pymongo provides an interface
- to easily access it from Python.
+Description: C-coded extension to the python-pymongo package
+ Pymongo provides an interface to easily access MongoDB from Python.
+ This package contains an extension written in C for higher performance.
 
 Package: python-pymongo-doc
 Architecture: all
@@ -61,8 +60,17 @@ Description: Python implementation of GridFS for MongoDB
 Package: python-bson
 Architecture: any
 Depends: ${python:Depends}, ${misc:Depends}, ${shlibs:Depends}
+Recommends: python-bson-ext [any-i386 any-ia64 any-amd64]
 Provides: ${python:Provides}
 Description: Python implementation of BSON for MongoDB
  BSON Python module contains all of the Binary JSON encoding and decoding
  logic for MongoDB.
 
+Package: python-bson-ext
+Architecture: any-i386 any-ia64 any-amd64
+Depends: ${python:Depends}, ${misc:Depends}, ${shlibs:Depends}
+Provides: ${python:Provides}
+Description: C-coded extension to the python-bson package
+ BSON Python module contains all of the Binary JSON encoding and decoding
+ logic for MongoDB.
+ This package contains an extension written in C for higher performance.
