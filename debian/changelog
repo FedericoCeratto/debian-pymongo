@@ -1,4 +1,4 @@
-pymongo (2.1.1-2) UNRELEASED; urgency=low
+pymongo (2.1.1-2) experimental; urgency=low
 
   * C extensions moved to python-pymongo-ext and python-bson-ext packages
 
