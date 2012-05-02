@@ -1,4 +1,4 @@
-# Copyright 2009-2011 10gen, Inc.
+# Copyright 2011-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -71,9 +71,9 @@ class TestSSL(unittest.TestCase):
                                         ssl=True)
 
         db = conn.pymongo_ssl_test
-        self.assert_(db.test.insert({'ssl': True}, safe=True))
+        db.test.drop()
+        self.assertTrue(db.test.insert({'ssl': True}, safe=True))
         self.assertTrue(db.test.find_one()['ssl'])
-        conn.drop_database(db)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ def _check_name(name):
     if not name:
         raise InvalidName("database name cannot be the empty string")
 
-    for invalid_char in [" ", ".", "$", "/", "\\"]:
+    for invalid_char in [" ", ".", "$", "/", "\\", "\x00"]:
         if invalid_char in name:
             raise InvalidName("database names cannot contain the "
                               "character %r" % invalid_char)
@@ -48,7 +48,7 @@ class Database(common.BaseObject):
         """Get a database by connection and name.
 
         Raises :class:`TypeError` if `name` is not an instance of
-        :class:`basestring`. Raises
+        :class:`basestring` (:class:`str` in python 3). Raises
         :class:`~pymongo.errors.InvalidName` if `name` is not a valid
         database name.
 
@@ -66,7 +66,8 @@ class Database(common.BaseObject):
                              **(connection.get_lasterror_options()))
 
         if not isinstance(name, basestring):
-            raise TypeError("name must be an instance of basestring")
+            raise TypeError("name must be an instance "
+                            "of %s" % (basestring.__name__,))
 
         _check_name(name)
 
@@ -171,10 +172,11 @@ class Database(common.BaseObject):
         return [manipulator.__class__.__name__
                 for manipulator in self.__outgoing_copying_manipulators]
 
-    def __cmp__(self, other):
+    def __eq__(self, other):
         if isinstance(other, Database):
-            return cmp((self.__connection, self.__name),
-                       (other.__connection, other.__name))
+            us = (self.__connection, self.__name)
+            them = (other.__connection, other.__name)
+            return us == them
         return NotImplemented
 
     def __repr__(self):
@@ -200,7 +202,7 @@ class Database(common.BaseObject):
         """
         return self.__getattr__(name)
 
-    def create_collection(self, name, options=None, **kwargs):
+    def create_collection(self, name, **kwargs):
         """Create a new :class:`~pymongo.collection.Collection` in this
         database.
 
@@ -221,19 +223,16 @@ class Database(common.BaseObject):
 
         :Parameters:
           - `name`: the name of the collection to create
-          - `options`: DEPRECATED options to use on the new collection
           - `**kwargs` (optional): additional keyword arguments will
             be passed as options for the create collection command
+
+        .. versionchanged:: 2.2
+           Removed deprecated argument: options
 
         .. versionchanged:: 1.5
            deprecating `options` in favor of kwargs
         """
         opts = {"create": True}
-        if options is not None:
-            warnings.warn("the options argument to create_collection is "
-                          "deprecated and will be removed. please use "
-                          "kwargs instead.", DeprecationWarning)
-            opts.update(options)
         opts.update(kwargs)
 
         if name in self.collection_names():
@@ -274,9 +273,9 @@ class Database(common.BaseObject):
 
         Send command `command` to the database and return the
         response. If `command` is an instance of :class:`basestring`
-        then the command {`command`: `value`} will be sent. Otherwise,
-        `command` must be an instance of :class:`dict` and will be
-        sent as is.
+        (:class:`str` in python 3) then the command {`command`: `value`}
+        will be sent. Otherwise, `command` must be an instance of
+        :class:`dict` and will be sent as is.
 
         Any additional keyword arguments will be added to the final
         command document before it is sent.
@@ -317,6 +316,9 @@ class Database(common.BaseObject):
           - `**kwargs` (optional): additional keyword arguments will
             be added to the command document before it is sent
 
+        .. versionchanged:: 2.2
+           Added support for `as_class` - the class you want to use for
+           the resulting documents
         .. versionchanged:: 1.6
            Added the `value` argument for string commands, and keyword
            arguments for additional command options.
@@ -331,17 +333,17 @@ class Database(common.BaseObject):
             command = SON([(command, value)])
 
         extra_opts = {
+            'as_class': kwargs.pop('as_class', None),
             'read_preference': kwargs.pop('read_preference',
                                           self.read_preference),
             'slave_okay': kwargs.pop('slave_okay', self.slave_okay),
             '_must_use_master': kwargs.pop('_use_master', True),
-            '_is_command': True,
             '_uuid_subtype': uuid_subtype
         }
 
         fields = kwargs.get('fields')
         if fields is not None and not isinstance(fields, dict):
-                kwargs['fields'] = helpers._fields_list_to_dict(fields)
+            kwargs['fields'] = helpers._fields_list_to_dict(fields)
 
         command.update(kwargs)
 
@@ -377,7 +379,7 @@ class Database(common.BaseObject):
 
         if not isinstance(name, basestring):
             raise TypeError("name_or_collection must be an instance of "
-                            "(Collection, str, unicode)")
+                            "%s or Collection" % (basestring.__name__,))
 
         self.__connection._purge_index(self.__name, name)
 
@@ -416,7 +418,7 @@ class Database(common.BaseObject):
 
         if not isinstance(name, basestring):
             raise TypeError("name_or_collection must be an instance of "
-                            "(Collection, str, unicode)")
+                            "%s or Collection" % (basestring.__name__,))
 
         result = self.command("validate", unicode(name),
                               scandata=scandata, full=full)
@@ -448,10 +450,18 @@ class Database(common.BaseObject):
 
         return result
 
-    def current_op(self):
+    def current_op(self, include_all=False):
         """Get information on operations currently running.
-        """
-        return self['$cmd.sys.inprog'].find_one()
+
+        :Parameters:
+          - `include_all` (optional): if ``True`` also list currently
+            idle operations in the result
+         """
+        if include_all:
+            return self['$cmd.sys.inprog'].find_one({"$all":True})
+        else:
+            return self['$cmd.sys.inprog'].find_one()
+
 
     def profiling_level(self):
         """Get the database's current profiling level.
@@ -537,7 +547,7 @@ class Database(common.BaseObject):
     def next(self):
         raise TypeError("'Database' object is not iterable")
 
-    def add_user(self, name, password):
+    def add_user(self, name, password, read_only=False):
         """Create user `name` with password `password`.
 
         Add a new user with permissions for this :class:`Database`.
@@ -547,13 +557,18 @@ class Database(common.BaseObject):
         :Parameters:
           - `name`: the name of the user to create
           - `password`: the password of the user to create
+          - `read_only` (optional): if ``True`` it will make user read only
+
+        .. versionchanged:: 2.2
+           Added support for read only users
 
         .. versionadded:: 1.4
         """
         pwd = helpers._password_digest(name, password)
         self.system.users.update({"user": name},
                                  {"user": name,
-                                  "pwd": pwd},
+                                  "pwd": pwd,
+                                  "readOnly": read_only},
                                  upsert=True, safe=True)
 
     def remove_user(self, name):
@@ -574,37 +589,40 @@ class Database(common.BaseObject):
 
         Once authenticated, the user has full read and write access to
         this database. Raises :class:`TypeError` if either `name` or
-        `password` is not an instance of ``(str,
-        unicode)``. Authentication lasts for the life of the underlying
-        :class:`~pymongo.connection.Connection`, or until :meth:`logout`
-        is called.
+        `password` is not an instance of :class:`basestring`
+        (:class:`str` in python 3). Authentication lasts for the life
+        of the underlying :class:`~pymongo.connection.Connection`, or
+        until :meth:`logout` is called.
 
         The "admin" database is special. Authenticating on "admin"
         gives access to *all* databases. Effectively, "admin" access
         means root access to the database.
 
-        .. note:: This method authenticates the current connection, and
-           will also cause all new :class:`~socket.socket` connections
-           in the underlying :class:`~pymongo.connection.Connection` to
-           be authenticated automatically.
+        .. note::
+          This method authenticates the current connection, and
+          will also cause all new :class:`~socket.socket` connections
+          in the underlying :class:`~pymongo.connection.Connection` to
+          be authenticated automatically.
 
-           - When sharing a :class:`~pymongo.connection.Connection`
-             between multiple threads, all threads will share the
-             authentication. If you need different authentication profiles
-             for different purposes (e.g. admin users) you must use
-             distinct instances of :class:`~pymongo.connection.Connection`.
+         - When sharing a :class:`~pymongo.connection.Connection`
+           between multiple threads, all threads will share the
+           authentication. If you need different authentication profiles
+           for different purposes (e.g. admin users) you must use
+           distinct instances of :class:`~pymongo.connection.Connection`.
 
-           - To get authentication to apply immediately to all
-             existing sockets you may need to reset this Connection's
-             sockets using :meth:`~pymongo.connection.Connection.disconnect`.
+         - To get authentication to apply immediately to all
+           existing sockets you may need to reset this Connection's
+           sockets using :meth:`~pymongo.connection.Connection.disconnect`.
 
-        .. warning:: Currently, calls to
-           :meth:`~pymongo.connection.Connection.end_request` will
-           lead to unpredictable behavior in combination with
-           auth. The :class:`~socket.socket` owned by the calling
-           thread will be returned to the pool, so whichever thread
-           uses that :class:`~socket.socket` next will have whatever
-           permissions were granted to the calling thread.
+        .. warning::
+
+          Currently, calls to
+          :meth:`~pymongo.connection.Connection.end_request` will
+          lead to unpredictable behavior in combination with
+          auth. The :class:`~socket.socket` owned by the calling
+          thread will be returned to the pool, so whichever thread
+          uses that :class:`~socket.socket` next will have whatever
+          permissions were granted to the calling thread.
 
         :Parameters:
           - `name`: the name of the user to authenticate
@@ -613,21 +631,31 @@ class Database(common.BaseObject):
         .. mongodoc:: authenticate
         """
         if not isinstance(name, basestring):
-            raise TypeError("name must be an instance of basestring")
+            raise TypeError("name must be an instance "
+                            "of %s" % (basestring.__name__,))
         if not isinstance(password, basestring):
-            raise TypeError("password must be an instance of basestring")
+            raise TypeError("password must be an instance "
+                            "of %s" % (basestring.__name__,))
 
-        nonce = self.command("getnonce")["nonce"]
-        key = helpers._auth_key(nonce, name, password)
+        in_request = self.connection.in_request()
         try:
-            self.command("authenticate", user=unicode(name),
-                         nonce=nonce, key=key)
-            self.connection._cache_credentials(self.name,
-                                               unicode(name),
-                                               unicode(password))
-            return True
-        except OperationFailure:
-            return False
+            if not in_request:
+                self.connection.start_request()
+
+            nonce = self.command("getnonce")["nonce"]
+            key = helpers._auth_key(nonce, name, password)
+            try:
+                self.command("authenticate", user=unicode(name),
+                             nonce=nonce, key=key)
+                self.connection._cache_credentials(self.name,
+                                                   unicode(name),
+                                                   unicode(password))
+                return True
+            except OperationFailure:
+                return False
+        finally:
+            if not in_request:
+                self.connection.end_request()
 
     def logout(self):
         """Deauthorize use of this database for this connection
@@ -672,8 +700,8 @@ class Database(common.BaseObject):
         that function when it is run on the server.
 
         Raises :class:`TypeError` if `code` is not an instance of
-        (str, unicode, `Code`). Raises
-        :class:`~pymongo.errors.OperationFailure` if the eval
+        :class:`basestring` (:class:`str` in python 3) or `Code`.
+        Raises :class:`~pymongo.errors.OperationFailure` if the eval
         fails. Returns the result of the evaluation.
 
         :Parameters:
@@ -692,8 +720,9 @@ class Database(common.BaseObject):
         """This is only here so that some API misusages are easier to debug.
         """
         raise TypeError("'Database' object is not callable. If you meant to "
-                        "call the '%s' method on a 'Connection' object it is "
-                        "failing because no such method exists." % self.__name)
+                        "call the '%s' method on a '%s' object it is "
+                        "failing because no such method exists." % (
+                            self.__name, self.__connection.__class__.__name__))
 
 
 class SystemJS(object):

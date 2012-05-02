@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@ try:
 except ImportError:
     # Python2.4 doesn't have a uuid module.
     pass
+
+from bson.py3compat import binary_type
 
 """Tools for representing BSON binary data.
 """
@@ -78,7 +80,7 @@ USER_DEFINED_SUBTYPE = 128
 """
 
 
-class Binary(str):
+class Binary(binary_type):
     """Representation of BSON binary data.
 
     This is necessary because we want to represent Python strings as
@@ -86,9 +88,13 @@ class Binary(str):
     the difference between what should be considered binary data and
     what should be considered a string when we encode to BSON.
 
-    Raises TypeError if `data` is not an instance of str or `subtype`
-    is not an instance of int. Raises ValueError if `subtype` is not
-    in [0, 256).
+    Raises TypeError if `data` is not an instance of :class:`str`
+    (:class:`bytes` in python 3) or `subtype` is not an instance of
+    :class:`int`. Raises ValueError if `subtype` is not in [0, 256).
+
+    .. note::
+      In python 3 instances of Binary with subtype 0 will be decoded
+      directly to :class:`bytes`.
 
     :Parameters:
       - `data`: the binary data to represent
@@ -98,13 +104,14 @@ class Binary(str):
     """
 
     def __new__(cls, data, subtype=BINARY_SUBTYPE):
-        if not isinstance(data, str):
-            raise TypeError("data must be an instance of str")
+        if not isinstance(data, binary_type):
+            raise TypeError("data must be an "
+                            "instance of %s" % (binary_type.__name__,))
         if not isinstance(subtype, int):
             raise TypeError("subtype must be an instance of int")
         if subtype >= 256 or subtype < 0:
             raise ValueError("subtype must be contained in [0, 256)")
-        self = str.__new__(cls, data)
+        self = binary_type.__new__(cls, data)
         self.__subtype = subtype
         return self
 
@@ -116,7 +123,7 @@ class Binary(str):
 
     def __eq__(self, other):
         if isinstance(other, Binary):
-            return (self.__subtype, str(self)) == (other.subtype, str(other))
+            return (self.__subtype, binary_type(self)) == (other.subtype, binary_type(other))
         # We don't return NotImplemented here because if we did then
         # Binary("foo") == "foo" would return True, since Binary is a
         # subclass of str...
@@ -126,7 +133,7 @@ class Binary(str):
         return not self == other
 
     def __repr__(self):
-        return "Binary(%s, %s)" % (str.__repr__(self), self.__subtype)
+        return "Binary(%s, %s)" % (binary_type.__repr__(self), self.__subtype)
 
 
 class UUIDLegacy(Binary):
@@ -136,26 +143,28 @@ class UUIDLegacy(Binary):
     .. doctest::
 
       >>> import uuid
-      >>> from bson.binary import Binary, UUIDLegacy
-      >>> id = uuid.uuid4()
-      >>> db.test.insert({'uuid': Binary(id.bytes, 3)})
+      >>> from bson.binary import Binary, UUIDLegacy, UUID_SUBTYPE
+      >>> my_uuid = uuid.uuid4()
+      >>> coll = db.test
+      >>> coll.uuid_subtype = UUID_SUBTYPE
+      >>> coll.insert({'uuid': Binary(my_uuid.bytes, 3)})
       ObjectId('...')
-      >>> db.test.find({'uuid': id}).count()
+      >>> coll.find({'uuid': my_uuid}).count()
       0
-      >>> db.test.find({'uuid': UUIDLegacy(id)}).count()
+      >>> coll.find({'uuid': UUIDLegacy(my_uuid)}).count()
       1
-      >>> db.test.find({'uuid': UUIDLegacy(id)})[0]['uuid']
+      >>> coll.find({'uuid': UUIDLegacy(my_uuid)})[0]['uuid']
       UUID('...')
       >>>
       >>> # Convert from subtype 3 to subtype 4
-      >>> doc = db.test.find_one({'uuid': UUIDLegacy(id)})
-      >>> db.test.save(doc)
+      >>> doc = coll.find_one({'uuid': UUIDLegacy(my_uuid)})
+      >>> coll.save(doc)
       ObjectId('...')
-      >>> db.test.find({'uuid': UUIDLegacy(id)}).count()
+      >>> coll.find({'uuid': UUIDLegacy(my_uuid)}).count()
       0
-      >>> db.test.find({'uuid': {'$in': [UUIDLegacy(id), id]}}).count()
+      >>> coll.find({'uuid': {'$in': [UUIDLegacy(my_uuid), my_uuid]}}).count()
       1
-      >>> db.test.find_one({'uuid': id})['uuid']
+      >>> coll.find_one({'uuid': my_uuid})['uuid']
       UUID('...')
 
     Raises TypeError if `obj` is not an instance of :class:`~uuid.UUID`.
@@ -167,7 +176,10 @@ class UUIDLegacy(Binary):
     def __new__(cls, obj):
         if not isinstance(obj, UUID):
             raise TypeError("obj must be an instance of uuid.UUID")
-        self = Binary.__new__(cls, obj.bytes, OLD_UUID_SUBTYPE)
+        # Python 3.0(.1) returns a bytearray instance for bytes (3.1 and
+        # newer just return a bytes instance). Convert that to binary_type
+        # for compatibility.
+        self = Binary.__new__(cls, binary_type(obj.bytes), OLD_UUID_SUBTYPE)
         self.__uuid = obj
         return self
 

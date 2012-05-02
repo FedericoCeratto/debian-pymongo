@@ -13,7 +13,7 @@ index in PyMongo.
 .. note:: 2D indexes require server version **>= 1.3.4**. Support for
    2D indexes also requires PyMongo version **>= 1.5.1**.
 
-.. mongodoc:: Geospatial+Indexing
+.. mongodoc:: geo
 
 Creating a Geospatial Index
 ---------------------------
@@ -78,8 +78,8 @@ Or circle (specified by center point and radius):
   ...   repr(doc)
   ...
   "{u'loc': [1, 2], u'_id': ObjectId('...')}"
-  "{u'loc': [2, 5], u'_id': ObjectId('...')}"
   "{u'loc': [4, 4], u'_id': ObjectId('...')}"
+  "{u'loc': [2, 5], u'_id': ObjectId('...')}"
 
 geoNear queries are also supported using :class:`~bson.son.SON`:
 

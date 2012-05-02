@@ -15,11 +15,10 @@ How does connection pooling work in PyMongo?
 --------------------------------------------
 
 Every :class:`~pymongo.connection.Connection` instance has built-in
-connection pooling. Each thread gets its own socket reserved on its
+connection pooling. By default, each thread gets its own socket reserved on its
 first operation. Those sockets are held until
 :meth:`~pymongo.connection.Connection.end_request` is called by that
-thread or :meth:`~pymongo.connection.Connection.disconnect` is called
-by any thread.
+thread.
 
 Calling :meth:`~pymongo.connection.Connection.end_request` allows the
 socket to be returned to the pool, and to be used by other threads
@@ -27,24 +26,58 @@ instead of creating a new socket. Judicious use of this method is
 important for applications with many threads or with long running
 threads that make few calls to PyMongo operations.
 
-How can I use PyMongo with an asynchronous socket library like `twisted <http://twistedmatrix.com/>`_?
-------------------------------------------------------------------------------------------------------
+Alternatively, a :class:`~pymongo.connection.Connection` created with
+``auto_start_request=False`` will share sockets (safely) among all threads.
 
-Currently there is no great way to use PyMongo in conjunction with
-asynchronous socket frameworks like `twisted
-<http://twistedmatrix.com/>`_ or `tornado
-<http://www.tornadoweb.org/>`_. PyMongo provides built-in connection
-pooling, so some of the benefits of those frameworks can be achieved
-just by writing multi-threaded code that shares a
+When :meth:`~pymongo.connection.Connection.disconnect` is called by any thread,
+all sockets are closed. PyMongo will create new sockets as needed.
+
+Does PyMongo support Python 3?
+------------------------------
+
+Starting with version 2.2 PyMongo supports Python 3.x where x >= 1. See the
+:doc:`python3` for details.
+
+Does PyMongo support asynchronous frameworks like Gevent, Tornado, or Twisted?
+------------------------------------------------------------------------------
+The only async framework that PyMongo fully supports is `Gevent
+<http://www.gevent.org/>`_.
+
+Currently there is no great way to use PyMongo in conjunction with `Tornado
+<http://www.tornadoweb.org/>`_ or `Twisted <http://twistedmatrix.com/>`_.
+PyMongo provides built-in connection pooling, so some of the benefits of those
+frameworks can be achieved just by writing multi-threaded code that shares a
 :class:`~pymongo.connection.Connection`.
 
-There is work in progress towards creating an `asynchronous Python
-driver <http://github.com/fiorix/mongo-async-python-driver>`_ for
-MongoDB using the Twisted framework, this project is currently less
-stable than PyMongo however.
+There are asynchronous MongoDB drivers in Python: `AsyncMongo for Tornado
+<https://github.com/bitly/asyncmongo>`_ and `TxMongo for Twisted
+<http://github.com/fiorix/mongo-async-python-driver>`_. Compared to PyMongo,
+however, these projects are less stable, lack features, and are less actively
+maintained.
+
+It is possible to use PyMongo with Tornado, if some precautions are taken to
+avoid blocking the event loop:
+
+- Make sure all MongoDB operations are very fast. Use the
+  `MongoDB profiler <http://www.mongodb.org/display/DOCS/Database+Profiler>`_
+  to watch for slow queries.
+
+- Create a single :class:`~pymongo.connection.Connection` instance for your
+  application in your startup code, before starting the IOLoop.
+
+- Configure the :class:`~pymongo.connection.Connection` with a short
+  ``socketTimeoutMS`` so slow operations result in a
+  :class:`~pymongo.errors.TimeoutError`, rather than blocking the loop and
+  preventing your application from responding to other requests.
+
+- Start up extra Tornado processes. Tornado is typically deployed with one
+  process per CPU core, proxied behind a load-balancer such as
+  `Nginx <http://wiki.nginx.org/Main>`_ or `HAProxy <http://haproxy.1wt.eu/>`_;
+  when using Tornado with a blocking driver like PyMongo it's recommended you
+  start two or three processes per core instead of one.
 
 What does *OperationFailure* cursor id not valid at server mean?
----------------------------------------------------------------------------------------
+----------------------------------------------------------------
 Cursors in MongoDB can timeout on the server if they've been open for
 a long time without any operations being performed on them. This can
 lead to an :class:`~pymongo.errors.OperationFailure` exception being
@@ -118,7 +151,9 @@ parameter to ``True``, which will cause all
 be aware (UTC). This setting is recommended, as it can force
 application code to handle timezones properly.
 
-.. warning:: Be careful not to save naive :class:`~datetime.datetime`
+.. warning::
+
+   Be careful not to save naive :class:`~datetime.datetime`
    instances that are not UTC (i.e. the result of calling
    :meth:`datetime.datetime.now`).
 

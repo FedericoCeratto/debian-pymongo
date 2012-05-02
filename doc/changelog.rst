@@ -1,6 +1,51 @@
 Changelog
 =========
 
+Changes in Version 2.2
+-----------------------
+
+Version 2.2 adds a few more frequently requested features and fixes a
+number of bugs.
+
+Special thanks go to Alex Grönholm for his contributions to Python 3
+support and maintaining the original pymongo3 port. Christoph Simon,
+Wouter Bolsterlee, Mike O'Brien, and Chris Tompkinson also contributed
+to this release.
+
+Important New Features:
+
+- Support for Python 3 -
+  See the :doc:`python3` for more information.
+- Support for Gevent -
+  See :doc:`examples/gevent` for more information.
+- Improved connection pooling -
+  See :doc:`examples/requests` for more information.
+
+.. warning::
+
+    A number of methods and method parameters that were deprecated in
+    PyMongo 1.9 or older versions have been removed in this release.
+    The full list of changes can be found in the following JIRA ticket:
+
+    https://jira.mongodb.org/browse/PYTHON-305
+
+    BSON module aliases from the pymongo package that were deprecated in
+    PyMongo 1.9 have also been removed in this release. See the following
+    JIRA ticket for details:
+
+    https://jira.mongodb.org/browse/PYTHON-304
+
+    As a result of this cleanup some minor code changes may be required
+    to use this release.
+
+Issues Resolved
+...............
+
+See the `PyMongo 2.2 release notes in JIRA`_ for the list of resolved issues
+in this release.
+
+.. _PyMongo 2.2 release notes in JIRA: https://jira.mongodb.org/browse/PYTHON/fixforversion/10584
+
 Changes in Version 2.1.1
 ------------------------
 
@@ -122,9 +167,11 @@ API changes:
   used PyMongo will treat the specified host:port pair(s) as a seed list and
   connect using replica set behavior.
 
-.. warning:: The default subtype for :class:`~bson.binary.Binary` has changed
-             from :const:`~bson.binary.OLD_BINARY_SUBTYPE` (2) to
-             :const:`~bson.binary.BINARY_SUBTYPE` (0).
+.. warning::
+
+    The default subtype for :class:`~bson.binary.Binary` has changed
+    from :const:`~bson.binary.OLD_BINARY_SUBTYPE` (2) to
+    :const:`~bson.binary.BINARY_SUBTYPE` (0).
 
 Issues Resolved
 ...............
@@ -162,12 +209,12 @@ API changes:
   `scandata` and `full` parameters. See the documentation for more
   details.
 
-.. warning:: The `pool_size`, `auto_start_request`, and `timeout` parameters
-             for :class:`~pymongo.connection.Connection` have been completely
-             removed in this release. They were deprecated in pymongo-1.4 and
-             have had no effect since then. Please make sure that your code
-             doesn't currently pass these parameters when creating a Connection
-             instance.
+.. warning::  The `pool_size`, `auto_start_request`, and `timeout` parameters
+              for :class:`~pymongo.connection.Connection` have been completely
+              removed in this release. They were deprecated in pymongo-1.4 and
+              have had no effect since then. Please make sure that your code
+              doesn't currently pass these parameters when creating a
+              Connection instance.
 
 Issues resolved
 ...............
@@ -313,17 +360,19 @@ In addition, the following exception classes have been renamed:
 The above exceptions now inherit from :class:`bson.errors.BSONError`
 rather than :class:`pymongo.errors.PyMongoError`.
 
-.. note:: All of the renamed modules and exceptions above have aliases
-   created with the old names, so these changes should not break
-   existing code. The old names will eventually be deprecated and then
-   removed, so users should begin migrating towards the new names now.
+.. note::  All of the renamed modules and exceptions above have aliases
+           created with the old names, so these changes should not break
+           existing code. The old names will eventually be deprecated and then
+           removed, so users should begin migrating towards the new names now.
 
-.. warning:: The change to the exception hierarchy mentioned above is
-   possibly breaking. If your code is catching
-   :class:`~pymongo.errors.PyMongoError`, then the exceptions raised
-   by :mod:`bson` will not be caught, even though they would have been
-   caught previously. Before upgrading, it is recommended that users
-   check for any cases like this.
+.. warning::
+
+  The change to the exception hierarchy mentioned above is
+  possibly breaking. If your code is catching
+  :class:`~pymongo.errors.PyMongoError`, then the exceptions raised
+  by :mod:`bson` will not be caught, even though they would have been
+  caught previously. Before upgrading, it is recommended that users
+  check for any cases like this.
 
 - the C extension now shares buffer.c/h with the Ruby driver
 - :mod:`bson` no longer raises :class:`~pymongo.errors.InvalidName`,
@@ -822,3 +871,10 @@ Changes in Version 0.9.7
   :class:`~pymongo.collection.Collection` names
 - add version as :attr:`pymongo.version`
 - add ``--no_ext`` command line option to *setup.py*
+
+.. toctree::
+   :hidden:
+
+   python3
+   examples/gevent
+   examples/requests

@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ from pymongo.cursor import Cursor
 from pymongo.database import Database
 from pymongo.errors import (InvalidOperation,
                             OperationFailure)
-from test_connection import get_connection
-import version
+from test.test_connection import get_connection
+from test import version
 
 
 class TestCursor(unittest.TestCase):
@@ -49,7 +49,7 @@ class TestCursor(unittest.TestCase):
         del c["millis"]
         c.pop("oldPlan", None)
         self.assertEqual(b, c)
-        self.assert_("cursor" in b)
+        self.assertTrue("cursor" in b)
 
     def test_hint(self):
         db = self.db
@@ -184,27 +184,27 @@ class TestCursor(unittest.TestCase):
 
         curs = db.test.find().limit(0).batch_size(10)
         curs.next()
-        self.assertEquals(10, curs._Cursor__retrieved)
+        self.assertEqual(10, curs._Cursor__retrieved)
 
         curs = db.test.find().limit(-2).batch_size(0)
         curs.next()
-        self.assertEquals(2, curs._Cursor__retrieved)
+        self.assertEqual(2, curs._Cursor__retrieved)
 
         curs = db.test.find().limit(-4).batch_size(5)
         curs.next()
-        self.assertEquals(4, curs._Cursor__retrieved)
+        self.assertEqual(4, curs._Cursor__retrieved)
 
         curs = db.test.find().limit(50).batch_size(500)
         curs.next()
-        self.assertEquals(50, curs._Cursor__retrieved)
+        self.assertEqual(50, curs._Cursor__retrieved)
 
         curs = db.test.find().batch_size(500)
         curs.next()
-        self.assertEquals(500, curs._Cursor__retrieved)
+        self.assertEqual(500, curs._Cursor__retrieved)
 
         curs = db.test.find().limit(50)
         curs.next()
-        self.assertEquals(50, curs._Cursor__retrieved)
+        self.assertEqual(50, curs._Cursor__retrieved)
 
         # these two might be shaky, as the default
         # is set by the server. as of 2.0.0-rc0, 101
@@ -212,11 +212,11 @@ class TestCursor(unittest.TestCase):
         # for queries without ntoreturn
         curs = db.test.find()
         curs.next()
-        self.assertEquals(101, curs._Cursor__retrieved)
+        self.assertEqual(101, curs._Cursor__retrieved)
 
         curs = db.test.find().limit(0).batch_size(0)
         curs.next()
-        self.assertEquals(101, curs._Cursor__retrieved)
+        self.assertEqual(101, curs._Cursor__retrieved)
 
     def test_skip(self):
         db = self.db
@@ -327,7 +327,7 @@ class TestCursor(unittest.TestCase):
             db.test.save({"x": i})
 
         self.assertEqual(10, db.test.find().count())
-        self.assert_(isinstance(db.test.find().count(), int))
+        self.assertTrue(isinstance(db.test.find().count(), int))
         self.assertEqual(10, db.test.find().limit(5).count())
         self.assertEqual(10, db.test.find().skip(5).count())
 
@@ -382,81 +382,6 @@ class TestCursor(unittest.TestCase):
         for _ in a:
             break
         self.assertRaises(InvalidOperation, a.where, 'this.x < 3')
-
-    def test_kill_cursors_implicit(self):
-        # Only CPython does reference counting garbage collection.
-        if (sys.platform.startswith('java') or
-            sys.platform == 'cli' or
-            'PyPy' in sys.version):
-            raise SkipTest()
-
-        db = self.db
-        db.drop_collection("test")
-
-        c = db.command("cursorInfo")["clientCursors_size"]
-
-        test = db.test
-        for i in range(10000):
-            test.insert({"i": i})
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Automatically closed by the server (limit == -1).
-        for _ in range(10):
-            db.test.find_one()
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        for _ in range(10):
-            for x in db.test.find():
-                break
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        a = db.test.find()
-        for x in a:
-            break
-        self.assertNotEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Explicitly close (won't work with PyPy and Jython).
-        del a
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Automatically closed by the server since the entire
-        # result was returned.
-        a = db.test.find().limit(10)
-        for x in a:
-            break
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-    def test_kill_cursors_explicit(self):
-        db = self.db
-        db.drop_collection("test")
-
-        c = db.command("cursorInfo")["clientCursors_size"]
-
-        test = db.test
-        for i in range(10000):
-            test.insert({"i": i})
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Automatically closed by the server (limit == -1).
-        for _ in range(10):
-            db.test.find_one()
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        a = db.test.find()
-        for x in a:
-            break
-        self.assertNotEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Explicitly close (should work with all interpreter implementations).
-        a.close()
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
-
-        # Automatically closed by the server since the entire
-        # result was returned.
-        a = db.test.find().limit(10)
-        for x in a:
-            break
-        self.assertEqual(c, db.command("cursorInfo")["clientCursors_size"])
 
     def test_rewind(self):
         self.db.test.save({"x": 1})
@@ -630,24 +555,23 @@ class TestCursor(unittest.TestCase):
         for i in range(100):
             self.db.test.save({"i": i})
 
-        izip = itertools.izip
         count = itertools.count
 
         self.assertRaises(IndexError, lambda: self.db.test.find()[-1:])
         self.assertRaises(IndexError, lambda: self.db.test.find()[1:2:2])
 
-        for a, b in izip(count(0), self.db.test.find()):
+        for a, b in zip(count(0), self.db.test.find()):
             self.assertEqual(a, b['i'])
 
         self.assertEqual(100, len(list(self.db.test.find()[0:])))
-        for a, b in izip(count(0), self.db.test.find()[0:]):
+        for a, b in zip(count(0), self.db.test.find()[0:]):
             self.assertEqual(a, b['i'])
 
         self.assertEqual(80, len(list(self.db.test.find()[20:])))
-        for a, b in izip(count(20), self.db.test.find()[20:]):
+        for a, b in zip(count(20), self.db.test.find()[20:]):
             self.assertEqual(a, b['i'])
 
-        for a, b in izip(count(99), self.db.test.find()[99:]):
+        for a, b in zip(count(99), self.db.test.find()[99:]):
             self.assertEqual(a, b['i'])
 
         for i in self.db.test.find()[1000:]:
@@ -655,25 +579,25 @@ class TestCursor(unittest.TestCase):
 
         self.assertEqual(5, len(list(self.db.test.find()[20:25])))
         self.assertEqual(5, len(list(self.db.test.find()[20L:25L])))
-        for a, b in izip(count(20), self.db.test.find()[20:25]):
+        for a, b in zip(count(20), self.db.test.find()[20:25]):
             self.assertEqual(a, b['i'])
 
         self.assertEqual(80, len(list(self.db.test.find()[40:45][20:])))
-        for a, b in izip(count(20), self.db.test.find()[40:45][20:]):
+        for a, b in zip(count(20), self.db.test.find()[40:45][20:]):
             self.assertEqual(a, b['i'])
 
         self.assertEqual(80,
                          len(list(self.db.test.find()[40:45].limit(0).skip(20))
                             )
                         )
-        for a, b in izip(count(20),
+        for a, b in zip(count(20),
                          self.db.test.find()[40:45].limit(0).skip(20)):
             self.assertEqual(a, b['i'])
 
         self.assertEqual(80,
                          len(list(self.db.test.find().limit(10).skip(40)[20:]))
                         )
-        for a, b in izip(count(20),
+        for a, b in zip(count(20),
                          self.db.test.find().limit(10).skip(40)[20:]):
             self.assertEqual(a, b['i'])
 

@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -192,6 +192,7 @@ class MasterSlaveConnection(BaseObject):
         that all operations performed within a request will be sent
         using the Master connection.
         """
+        self.master.start_request()
         self.__in_request = True
 
     def end_request(self):
@@ -202,10 +203,11 @@ class MasterSlaveConnection(BaseObject):
         self.__in_request = False
         self.__master.end_request()
 
-    def __cmp__(self, other):
+    def __eq__(self, other):
         if isinstance(other, MasterSlaveConnection):
-            return cmp((self.__master, self.__slaves),
-                       (other.__master, other.__slaves))
+            us = (self.__master, self.slaves)
+            them = (other.__master, other.__slaves)
+            return us == them
         return NotImplemented
 
     def __repr__(self):

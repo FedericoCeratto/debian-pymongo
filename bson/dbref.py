@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,9 @@
 
 """Tools for manipulating DBRefs (references to MongoDB documents)."""
 
-from bson.son import SON
 from copy import deepcopy
+
+from bson.son import SON
 
 
 class DBRef(object):
@@ -26,10 +27,10 @@ class DBRef(object):
         """Initialize a new :class:`DBRef`.
 
         Raises :class:`TypeError` if `collection` or `database` is not
-        an instance of :class:`basestring`. `database` is optional and
-        allows references to documents to work across databases. Any
-        additional keyword arguments will create additional fields in
-        the resultant embedded document.
+        an instance of :class:`basestring` (:class:`str` in python 3).
+        `database` is optional and allows references to documents to work
+        across databases. Any additional keyword arguments will create
+        additional fields in the resultant embedded document.
 
         :Parameters:
           - `collection`: name of the collection the document is stored in
@@ -46,9 +47,11 @@ class DBRef(object):
         .. mongodoc:: dbrefs
         """
         if not isinstance(collection, basestring):
-            raise TypeError("collection must be an instance of basestring")
+            raise TypeError("collection must be an "
+                            "instance of %s" % (basestring.__name__,))
         if database is not None and not isinstance(database, basestring):
-            raise TypeError("database must be an instance of basestring")
+            raise TypeError("database must be an "
+                            "instance of %s" % (basestring.__name__,))
 
         self.__collection = collection
         self.__id = id
@@ -110,12 +113,13 @@ class DBRef(object):
         return "DBRef(%r, %r, %r%s)" % (self.collection, self.id,
                                         self.database, extra)
 
-    def __cmp__(self, other):
+    def __eq__(self, other):
         if isinstance(other, DBRef):
-            return cmp([self.__database, self.__collection,
-                        self.__id, self.__kwargs],
-                       [other.__database, other.__collection,
-                        other.__id, other.__kwargs])
+            us = [self.__database, self.__collection,
+                  self.__id, self.__kwargs]
+            them = [other.__database, other.__collection,
+                    other.__id, other.__kwargs]
+            return us == them
         return NotImplemented
 
     def __hash__(self):
