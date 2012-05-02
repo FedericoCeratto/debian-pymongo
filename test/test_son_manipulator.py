@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ from pymongo.son_manipulator import (NamespaceInjector,
                                      ObjectIdInjector,
                                      ObjectIdShuffler,
                                      SONManipulator)
-from test_connection import get_connection
-import qcheck
+from test.test_connection import get_connection
+from test import qcheck
 
 
 class TestSONManipulator(unittest.TestCase):
@@ -78,10 +78,10 @@ class TestSONManipulator(unittest.TestCase):
                 break
             return son_in == son
 
-        self.assert_(incoming_moves_id({}))
-        self.assert_(incoming_moves_id({"_id": 12}))
-        self.assert_(incoming_moves_id({"hello": "world", "_id": 12}))
-        self.assert_(incoming_moves_id(SON([("hello", "world"),
+        self.assertTrue(incoming_moves_id({}))
+        self.assertTrue(incoming_moves_id({"_id": 12}))
+        self.assertTrue(incoming_moves_id({"hello": "world", "_id": 12}))
+        self.assertTrue(incoming_moves_id(SON([("hello", "world"),
                                                ("_id", 12)])))
 
         def outgoing_is_identity(son):

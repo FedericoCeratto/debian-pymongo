@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,15 @@
 
 """Tests for the dbref module."""
 
+import os
 import pickle
 import unittest
 import sys
 sys.path[0:0] = [""]
 
-from bson.objectid import ObjectId
 from bson.dbref import DBRef
+from bson.objectid import ObjectId
+from bson.py3compat import b
 
 from copy import deepcopy
 
@@ -39,10 +41,10 @@ class TestDBRef(unittest.TestCase):
         self.assertRaises(TypeError, DBRef, a, a)
         self.assertRaises(TypeError, DBRef, None, a)
         self.assertRaises(TypeError, DBRef, "coll", a, 5)
-        self.assert_(DBRef("coll", a))
-        self.assert_(DBRef(u"coll", a))
-        self.assert_(DBRef(u"coll", 5))
-        self.assert_(DBRef(u"coll", 5, "database"))
+        self.assertTrue(DBRef("coll", a))
+        self.assertTrue(DBRef(u"coll", a))
+        self.assertTrue(DBRef(u"coll", 5))
+        self.assertTrue(DBRef(u"coll", 5, "database"))
 
     def test_read_only(self):
         a = DBRef("coll", ObjectId())
@@ -65,7 +67,8 @@ class TestDBRef(unittest.TestCase):
                          "DBRef('coll', ObjectId('1234567890abcdef12345678'))")
         self.assertEqual(repr(DBRef(u"coll",
                               ObjectId("1234567890abcdef12345678"))),
-                         "DBRef(u'coll', ObjectId('1234567890abcdef12345678'))"
+                         "DBRef(%s, ObjectId('1234567890abcdef12345678'))"
+                         % (repr(u'coll'),)
                         )
         self.assertEqual(repr(DBRef("coll", 5, foo="bar")),
                          "DBRef('coll', 5, foo='bar')")
@@ -73,8 +76,12 @@ class TestDBRef(unittest.TestCase):
                               ObjectId("1234567890abcdef12345678"), "foo")),
                          "DBRef('coll', ObjectId('1234567890abcdef12345678'), "
                          "'foo')")
-        self.assertEqual(repr(DBRef("coll", 5, "baz", foo="bar", baz=4)),
-                         "DBRef('coll', 5, 'baz', foo='bar', baz=4)")
+        # This assert will fail in Python 3.3+ unless
+        # hash randomization is disabled.
+        if (sys.version_info < (3, 3) or
+            os.environ.get('PYTHONHASHSEED') == '0'):
+            self.assertEqual(repr(DBRef("coll", 5, "baz", foo="bar", baz=4)),
+                             "DBRef('coll', 5, 'baz', foo='bar', baz=4)")
 
     def test_cmp(self):
         self.assertEqual(DBRef("coll", ObjectId("1234567890abcdef12345678")),
@@ -88,7 +95,7 @@ class TestDBRef(unittest.TestCase):
                             DBRef("col", ObjectId("1234567890abcdef12345678")))
         self.assertNotEqual(DBRef("coll",
                             ObjectId("1234567890abcdef12345678")),
-                            DBRef("coll", ObjectId("123456789011")))
+                            DBRef("coll", ObjectId(b("123456789011"))))
         self.assertNotEqual(DBRef("coll",
                                   ObjectId("1234567890abcdef12345678")), 4)
         self.assertEqual(DBRef("coll",
@@ -125,18 +132,19 @@ class TestDBRef(unittest.TestCase):
 
     def test_pickling(self):
         dbr = DBRef('coll', 5, foo='bar')
-        pkl = pickle.dumps(dbr)
-        dbr2 = pickle.loads(pkl)
-        self.assertEqual(dbr, dbr2)
+        for protocol in [0, 1, 2, -1]:
+            pkl = pickle.dumps(dbr, protocol=protocol)
+            dbr2 = pickle.loads(pkl)
+            self.assertEqual(dbr, dbr2)
 
     def test_dbref_hash(self):
         dbref_1a = DBRef('collection', 'id', 'database')
         dbref_1b = DBRef('collection', 'id', 'database')
-        self.assertEquals(hash(dbref_1a), hash(dbref_1b))
+        self.assertEqual(hash(dbref_1a), hash(dbref_1b))
 
         dbref_2a = DBRef('collection', 'id', 'database', custom='custom')
         dbref_2b = DBRef('collection', 'id', 'database', custom='custom')
-        self.assertEquals(hash(dbref_2a), hash(dbref_2b))
+        self.assertEqual(hash(dbref_2a), hash(dbref_2b))
 
         self.assertNotEqual(hash(dbref_1a), hash(dbref_2a))
 

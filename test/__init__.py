@@ -1,4 +1,4 @@
-# Copyright 2010 10gen, Inc.
+# Copyright 2010-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 """Clean up databases after running `nosetests`.
 """
 
-from test_connection import get_connection
+from test.test_connection import get_connection
 
 
 def teardown():

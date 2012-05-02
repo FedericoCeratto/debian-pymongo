@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2011-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,10 @@ class TestThreadsReplicaSet(TestConnectionReplicaSetBase, BaseTestThreads):
         """
         TestConnectionReplicaSetBase.setUp(self)
         BaseTestThreads.setUp(self)
+
+    def tearDown(self):
+        TestConnectionReplicaSetBase.tearDown(self)
+        BaseTestThreads.tearDown(self)
 
     def _get_connection(self):
         """
@@ -100,6 +104,10 @@ class TestThreadsAuthReplicaSet(TestConnectionReplicaSetBase, BaseTestThreadsAut
         """
         TestConnectionReplicaSetBase.setUp(self)
         BaseTestThreadsAuth.setUp(self)
+
+    def tearDown(self):
+        TestConnectionReplicaSetBase.tearDown(self)
+        BaseTestThreadsAuth.tearDown(self)
 
     def _get_connection(self):
         """

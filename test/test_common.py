@@ -1,4 +1,4 @@
-# Copyright 2009-2011 10gen, Inc.
+# Copyright 2011-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@
 """Test the pymongo common module."""
 
 import os
-import socket
 import unittest
 import warnings
 
 from pymongo.connection import Connection
 from pymongo.errors import ConfigurationError, OperationFailure
+from test.utils import drop_collections
 
 
-host = os.environ.get("DB_IP", socket.gethostname())
+host = os.environ.get("DB_IP", 'localhost')
 port = int(os.environ.get("DB_PORT", 27017))
 pair = '%s:%d' % (host, port)
 
@@ -146,14 +146,14 @@ class TestCommon(unittest.TestCase):
         self.assertRaises(TypeError, coll._BaseObject__set_safe, 20)
 
         coll.remove()
-        self.assertEquals(None, coll.find_one(slave_okay=True))
+        self.assertEqual(None, coll.find_one(slave_okay=True))
         coll.unset_lasterror_options()
         coll.set_lasterror_options(w=4, wtimeout=10)
         # Fails if we don't have 4 active nodes or we don't have replication...
         self.assertRaises(OperationFailure, coll.insert, {'foo': 'bar'})
         # Succeeds since we override the lasterror settings per query.
-        self.assert_(coll.insert({'foo': 'bar'}, fsync=True))
-        c.drop_database(db)
+        self.assertTrue(coll.insert({'foo': 'bar'}, fsync=True))
+        drop_collections(db)
         warnings.resetwarnings()
 
 

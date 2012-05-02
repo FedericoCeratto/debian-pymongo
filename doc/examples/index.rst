@@ -21,3 +21,5 @@ MongoDB, you can start it like so:
    geo
    replica_set
    custom_type
+   gevent
+   requests

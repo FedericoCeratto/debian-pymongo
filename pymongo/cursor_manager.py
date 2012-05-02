@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Different managers to handle when cursors are killed after they are closed.
+"""DEPRECATED - Different managers to handle when cursors are killed after
+they are closed.
 
 New cursor managers should be defined as subclasses of CursorManager and can be
 installed on a connection by calling
-`pymongo.connection.Connection.set_cursor_manager`."""
+`pymongo.connection.Connection.set_cursor_manager`.
+
+.. versionchanged:: 2.1+
+   Deprecated.
+"""
 
 import weakref
 

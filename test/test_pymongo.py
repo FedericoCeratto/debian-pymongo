@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ class TestPyMongo(unittest.TestCase):
 
     def test_connection_alias(self):
         c = pymongo.Connection(self.host, self.port)
-        self.assert_(c)
+        self.assertTrue(c)
         self.assertEqual(c.host, self.host)
         self.assertEqual(c.port, self.port)
 

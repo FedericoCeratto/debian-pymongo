@@ -1,4 +1,4 @@
-# Copyright 2009 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ class TestTimestamp(unittest.TestCase):
         t = Timestamp(123, 456)
         self.assertEqual(t.time, 123)
         self.assertEqual(t.inc, 456)
-        self.assert_(isinstance(t, Timestamp))
+        self.assertTrue(isinstance(t, Timestamp))
 
     def test_datetime(self):
         d = datetime.datetime(2010, 5, 5, tzinfo=utc)
@@ -49,8 +49,10 @@ class TestTimestamp(unittest.TestCase):
         dc = copy.deepcopy(d)
         self.assertEqual(dc, t.as_datetime())
 
-        dp = pickle.loads(pickle.dumps(d))
-        self.assertEqual(dp, t.as_datetime())
+        for protocol in [0, 1, 2, -1]:
+            pkl = pickle.dumps(d, protocol=protocol)
+            dp = pickle.loads(pkl)
+            self.assertEqual(dp, t.as_datetime())
 
     def test_exceptions(self):
         self.assertRaises(TypeError, Timestamp)
@@ -60,7 +62,7 @@ class TestTimestamp(unittest.TestCase):
         self.assertRaises(TypeError, Timestamp, 123, 1.2)
         self.assertRaises(ValueError, Timestamp, 0, -1)
         self.assertRaises(ValueError, Timestamp, -1, 0)
-        self.assert_(Timestamp(0, 0))
+        self.assertTrue(Timestamp(0, 0))
 
     def test_equality(self):
         t = Timestamp(1, 1)

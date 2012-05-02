@@ -1,4 +1,4 @@
-# Copyright 2009-2011 10gen, Inc.
+# Copyright 2011-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License.  You
@@ -15,7 +15,7 @@
 
 """Tools to parse and validate a MongoDB URI."""
 
-import urllib
+from urllib import unquote_plus
 
 from pymongo.common import validate
 from pymongo.errors import (ConfigurationError,
@@ -62,7 +62,7 @@ def _rpartition(entity, sep):
 
 def parse_userinfo(userinfo):
     """Validates the format of user information in a MongoDB URI.
-    Reserved characters like ':', '/' and '@' must be escaped
+    Reserved characters like ':', '/', '+' and '@' must be escaped
     following RFC 2396.
 
     Returns a 2-tuple containing the unescaped username followed
@@ -70,6 +70,9 @@ def parse_userinfo(userinfo):
 
     :Paramaters:
         - `userinfo`: A string of the form <username>:<password>
+
+    .. versionchanged:: 2.2
+       Now uses `urllib.unquote_plus` so `+` characters must be escaped.
     """
     if '@' in userinfo or userinfo.count(':') > 1:
         raise InvalidURI("':' or '@' characters in a username or password "
@@ -78,8 +81,8 @@ def parse_userinfo(userinfo):
     if not user or not passwd:
         raise InvalidURI("An empty string is not a "
                          "valid username or password.")
-    user = urllib.unquote(user)
-    passwd = urllib.unquote(passwd)
+    user = unquote_plus(user)
+    passwd = unquote_plus(passwd)
 
     return user, passwd
 
@@ -277,3 +280,4 @@ if __name__ == '__main__':
     except (InvalidURI, UnsupportedOption), e:
         print e
     sys.exit(0)
+

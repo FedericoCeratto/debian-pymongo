@@ -1,4 +1,4 @@
-# Copyright 2009-2010 10gen, Inc.
+# Copyright 2009-2012 10gen, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -85,11 +85,11 @@ class TestMasterSlaveConnection(unittest.TestCase):
                                                           Connection()]
 
         self.connection.disconnect()
-        self.assertEquals(1,
+        self.assertEqual(1,
             self.connection._MasterSlaveConnection__master._disconnects)
-        self.assertEquals(1,
+        self.assertEqual(1,
             self.connection._MasterSlaveConnection__slaves[0]._disconnects)
-        self.assertEquals(1,
+        self.assertEqual(1,
             self.connection._MasterSlaveConnection__slaves[1]._disconnects)
 
     def test_continue_until_slave_works(self):
@@ -122,9 +122,9 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.connection._MasterSlaveConnection__slaves = NotRandomList()
 
         response = self.connection._send_message_with_response('message')
-        self.assertEquals((NotRandomList.last_idx, 'sent'), response)
-        self.assertNotEquals(-1, NotRandomList.last_idx)
-        self.assertEquals(3, Slave.calls)
+        self.assertEqual((NotRandomList.last_idx, 'sent'), response)
+        self.assertNotEqual(-1, NotRandomList.last_idx)
+        self.assertEqual(3, Slave.calls)
 
     def test_raise_autoreconnect_if_all_slaves_fail(self):
         class Slave(object):
@@ -154,7 +154,7 @@ class TestMasterSlaveConnection(unittest.TestCase):
 
         self.assertRaises(AutoReconnect,
             self.connection._send_message_with_response, 'message')
-        self.assertEquals(4, Slave.calls)
+        self.assertEqual(4, Slave.calls)
 
     def test_get_db(self):
 
@@ -168,7 +168,7 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.assertRaises(InvalidName, make_db, self.connection, "te/t")
         self.assertRaises(InvalidName, make_db, self.connection, "te st")
 
-        self.assert_(isinstance(self.connection.test, Database))
+        self.assertTrue(isinstance(self.connection.test, Database))
         self.assertEqual(self.connection.test, self.connection["test"])
         self.assertEqual(self.connection.test, Database(self.connection,
                                                         "test"))
@@ -178,27 +178,28 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.connection.pymongo_test_mike.test.save({"dummy": u"object"})
 
         dbs = self.connection.database_names()
-        self.assert_("pymongo_test" in dbs)
-        self.assert_("pymongo_test_mike" in dbs)
+        self.assertTrue("pymongo_test" in dbs)
+        self.assertTrue("pymongo_test_mike" in dbs)
 
     def test_drop_database(self):
-        # This test has been known to fail due to SERVER-2329
         self.assertRaises(TypeError, self.connection.drop_database, 5)
         self.assertRaises(TypeError, self.connection.drop_database, None)
 
+        raise SkipTest("This test often fails due to SERVER-2329")
+        
         self.connection.pymongo_test.test.save({"dummy": u"object"}, safe=True)
         dbs = self.connection.database_names()
-        self.assert_("pymongo_test" in dbs)
+        self.assertTrue("pymongo_test" in dbs)
         self.connection.drop_database("pymongo_test")
         dbs = self.connection.database_names()
-        self.assert_("pymongo_test" not in dbs)
+        self.assertTrue("pymongo_test" not in dbs)
 
         self.connection.pymongo_test.test.save({"dummy": u"object"})
         dbs = self.connection.database_names()
-        self.assert_("pymongo_test" in dbs)
+        self.assertTrue("pymongo_test" in dbs)
         self.connection.drop_database(self.connection.pymongo_test)
         dbs = self.connection.database_names()
-        self.assert_("pymongo_test" not in dbs)
+        self.assertTrue("pymongo_test" not in dbs)
 
     def test_iteration(self):
 
@@ -223,16 +224,16 @@ class TestMasterSlaveConnection(unittest.TestCase):
 
     # This was failing because commands were being sent to the slaves
     def test_create_collection(self):
-        self.connection.drop_database('pymongo_test')
+        self.connection.pymongo_test.test.drop()
 
         collection = self.db.create_collection('test')
-        self.assert_(isinstance(collection, Collection))
+        self.assertTrue(isinstance(collection, Collection))
 
         self.assertRaises(CollectionInvalid, self.db.create_collection, 'test')
 
     # Believe this was failing for the same reason...
     def test_unique_index(self):
-        self.connection.drop_database('pymongo_test')
+        self.connection.pymongo_test.test.drop()
         self.db.test.create_index('username', unique=True)
 
         self.db.test.save({'username': 'mike'}, safe=True)
@@ -251,7 +252,7 @@ class TestMasterSlaveConnection(unittest.TestCase):
                     count += 1
             except:
                 count += 1
-        self.assert_(count)
+        self.assertTrue(count)
 
     # NOTE this test is non-deterministic, but hopefully we pause long enough
     # for the slaves to pull...
@@ -269,54 +270,55 @@ class TestMasterSlaveConnection(unittest.TestCase):
                 count += 1
         self.assertFalse(count)
 
-    def test_kill_cursors(self):
+    def test_kill_cursor_explicit(self):
+        c = self.connection
+        c.slave_okay = True
+        db = c.pymongo_test
 
-        def cursor_count():
-            count = 0
-            res = self.connection.master.test_pymongo.command("cursorInfo")
-            count += res["clientCursors_size"]
-            for slave in self.connection.slaves:
-                res = slave.test_pymongo.command("cursorInfo")
-                count += res["clientCursors_size"]
-            return count
+        test = db.master_slave_test_kill_cursor_explicit
+        test.drop()
 
-        self.connection.test_pymongo.drop_collection("test")
-        db = self.db
+        for i in range(20):
+            test.insert({"i": i}, w=1 + len(self.slaves))
 
-        before = cursor_count()
-
-        for i in range(10000):
-            db.test.insert({"i": i})
-        time.sleep(11)  # need to sleep to be sure this gets pulled...
-
-        self.assertEqual(before, cursor_count())
-
-        for _ in range(10):
-            db.test.find_one()
-
-        self.assertEqual(before, cursor_count())
-
-        for _ in range(10):
-            for x in db.test.find():
+        st = time.time()
+        while time.time() - st < 120:
+            # Wait for replication -- the 'w' parameter should obviate this
+            # loop but it's not working reliably in Jenkins right now
+            if list(test.find({"i": 19})):
                 break
+            time.sleep(0.5)
+        else:
+            self.fail("Replication timeout, test coll has %s records" % (
+                len(list(test.find()))
+            ))
 
-        self.assertEqual(before, cursor_count())
+        # Partially evaluate cursor so it's left alive, then kill it
+        cursor = test.find().batch_size(10)
+        self.assertNotEqual(
+            cursor._Cursor__connection_id,
+            -1,
+            "Expected cursor connected to a slave, not master")
 
-        a = db.test.find()
-        for x in a:
-            break
+        self.assertTrue(cursor.next())
+        self.assertNotEqual(0, cursor.cursor_id)
 
-        self.assertNotEqual(before, cursor_count())
+        cursor_id = cursor.cursor_id
 
-        del a
+        # Cursor dead on server - trigger a getMore on the same cursor_id and
+        # check that the server returns an error.
+        cursor2 = cursor.clone()
+        cursor2._Cursor__id = cursor_id
 
-        self.assertEqual(before, cursor_count())
+        if (sys.platform.startswith('java') or
+            'PyPy' in sys.version):
+            # Explicitly kill cursor.
+            cursor.close()
+        else:
+            # Implicitly kill it in CPython.
+            del cursor
 
-        a = db.test.find().limit(10)
-        for x in a:
-            break
-
-        self.assertEqual(before, cursor_count())
+        self.assertRaises(OperationFailure, lambda: list(cursor2))
 
     def test_base_object(self):
         c = self.connection
@@ -330,6 +332,7 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.assertFalse(db.safe)
         self.assertEqual({}, db.get_lasterror_options())
         coll = db.test
+        coll.drop()
         self.assertFalse(coll.slave_okay)
         self.assertTrue(bool(c.read_preference))
         self.assertFalse(coll.safe)
@@ -339,31 +342,33 @@ class TestMasterSlaveConnection(unittest.TestCase):
         self.assertTrue(bool(cursor._Cursor__read_preference))
 
         c.safe = True
-        c.set_lasterror_options(w=3, wtimeout=100)
+        w = 1 + len(self.slaves)
+        wtimeout=10000 # Wait 10 seconds for replication to complete
+        c.set_lasterror_options(w=w, wtimeout=wtimeout)
         self.assertFalse(c.slave_okay)
         self.assertTrue(bool(c.read_preference))
         self.assertTrue(c.safe)
-        self.assertEqual({'w': 3, 'wtimeout': 100}, c.get_lasterror_options())
+        self.assertEqual({'w': w, 'wtimeout': wtimeout}, c.get_lasterror_options())
         db = c.test
         self.assertFalse(db.slave_okay)
         self.assertTrue(bool(c.read_preference))
         self.assertTrue(db.safe)
-        self.assertEqual({'w': 3, 'wtimeout': 100}, db.get_lasterror_options())
+        self.assertEqual({'w': w, 'wtimeout': wtimeout}, db.get_lasterror_options())
         coll = db.test
         self.assertFalse(coll.slave_okay)
         self.assertTrue(bool(c.read_preference))
         self.assertTrue(coll.safe)
-        self.assertEqual({'w': 3, 'wtimeout': 100},
+        self.assertEqual({'w': w, 'wtimeout': wtimeout},
                          coll.get_lasterror_options())
         cursor = coll.find()
         self.assertFalse(cursor._Cursor__slave_okay)
         self.assertTrue(bool(cursor._Cursor__read_preference))
 
         coll.insert({'foo': 'bar'})
-        self.assertEquals(1, coll.find({'foo': 'bar'}).count())
-        self.assert_(coll.find({'foo': 'bar'}))
+        self.assertEqual(1, coll.find({'foo': 'bar'}).count())
+        self.assertTrue(coll.find({'foo': 'bar'}))
         coll.remove({'foo': 'bar'})
-        self.assertEquals(0, coll.find({'foo': 'bar'}).count())
+        self.assertEqual(0, coll.find({'foo': 'bar'}).count())
 
         # Set self.connection back to defaults
         c.safe = False
@@ -376,53 +381,51 @@ class TestMasterSlaveConnection(unittest.TestCase):
     def test_document_class(self):
         c = MasterSlaveConnection(self.master, self.slaves)
         db = c.pymongo_test
-        db.test.insert({"x": 1})
-        time.sleep(1)
+        w = 1 + len(self.slaves)
+        db.test.insert({"x": 1}, safe=True, w=w)
 
         self.assertEqual(dict, c.document_class)
-        self.assert_(isinstance(db.test.find_one(), dict))
+        self.assertTrue(isinstance(db.test.find_one(), dict))
         self.assertFalse(isinstance(db.test.find_one(), SON))
 
         c.document_class = SON
 
         self.assertEqual(SON, c.document_class)
-        self.assert_(isinstance(db.test.find_one(), SON))
+        self.assertTrue(isinstance(db.test.find_one(), SON))
         self.assertFalse(isinstance(db.test.find_one(as_class=dict), SON))
 
         c = MasterSlaveConnection(self.master, self.slaves, document_class=SON)
         db = c.pymongo_test
 
         self.assertEqual(SON, c.document_class)
-        self.assert_(isinstance(db.test.find_one(), SON))
+        self.assertTrue(isinstance(db.test.find_one(), SON))
         self.assertFalse(isinstance(db.test.find_one(as_class=dict), SON))
 
         c.document_class = dict
 
         self.assertEqual(dict, c.document_class)
-        self.assert_(isinstance(db.test.find_one(), dict))
+        self.assertTrue(isinstance(db.test.find_one(), dict))
         self.assertFalse(isinstance(db.test.find_one(), SON))
 
     def test_tz_aware(self):
         dt = datetime.datetime.utcnow()
         conn = MasterSlaveConnection(self.master, self.slaves)
-        self.assertEquals(False, conn.tz_aware)
+        self.assertEqual(False, conn.tz_aware)
         db = conn.pymongo_test
-        db.tztest.insert({'dt': dt}, safe=True)
-        time.sleep(0.5)
+        w = 1 + len(self.slaves)
+        db.tztest.insert({'dt': dt}, safe=True, w=w)
         self.assertEqual(None, db.tztest.find_one()['dt'].tzinfo)
 
         conn = MasterSlaveConnection(self.master, self.slaves, tz_aware=True)
-        self.assertEquals(True, conn.tz_aware)
+        self.assertEqual(True, conn.tz_aware)
         db = conn.pymongo_test
-        db.tztest.insert({'dt': dt}, safe=True)
-        time.sleep(0.5)
+        db.tztest.insert({'dt': dt}, safe=True, w=w)
         self.assertEqual(utc, db.tztest.find_one()['dt'].tzinfo)
 
         conn = MasterSlaveConnection(self.master, self.slaves, tz_aware=False)
-        self.assertEquals(False, conn.tz_aware)
+        self.assertEqual(False, conn.tz_aware)
         db = conn.pymongo_test
-        db.tztest.insert({'dt': dt})
-        time.sleep(0.5)
+        db.tztest.insert({'dt': dt}, safe=True, w=w)
         self.assertEqual(None, db.tztest.find_one()['dt'].tzinfo)
 
 
