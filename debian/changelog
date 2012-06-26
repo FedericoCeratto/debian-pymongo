@@ -1,3 +1,9 @@
+pymongo (2.2-2) UNRELEASED; urgency=low
+
+  * Dependency added (Closes: #678471)
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 26 Jun 2012 22:28:26 +0100
+
 pymongo (2.2-1) unstable; urgency=low
 
   * New upstream release.
