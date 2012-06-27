@@ -7,7 +7,6 @@ export DH_VERBOSE=1
 override_dh_auto_build:
 	dh_auto_build
 	sphinx-build -b html doc debian/html
-	rm -rf debian/html/_sources/
 	rm -f debian/python-pymongo-doc/usr/share/doc/python-pymongo-doc/html/_static/jquery.js
 	rm -rf debian/python-pymongo-doc/usr/share/doc/python-pymongo-doc/html/.doctrees
 
