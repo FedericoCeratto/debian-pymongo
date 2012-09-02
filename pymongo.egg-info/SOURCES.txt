@@ -2,7 +2,6 @@ LICENSE
 MANIFEST.in
 README.rst
 distribute_setup.py
-setup.cfg
 setup.py
 bson/__init__.py
 bson/_cbsonmodule.c
@@ -67,13 +66,13 @@ doc/api/pymongo/pool.rst
 doc/api/pymongo/replica_set_connection.rst
 doc/api/pymongo/son_manipulator.rst
 doc/api/pymongo/uri_parser.rst
+doc/examples/aggregation.rst
 doc/examples/custom_type.rst
 doc/examples/geo.rst
 doc/examples/gevent.rst
 doc/examples/gridfs.rst
+doc/examples/high_availability.rst
 doc/examples/index.rst
-doc/examples/map_reduce.rst
-doc/examples/replica_set.rst
 doc/examples/requests.rst
 gridfs/__init__.py
 gridfs/errors.py
@@ -91,6 +90,7 @@ pymongo/helpers.py
 pymongo/master_slave_connection.py
 pymongo/message.py
 pymongo/pool.py
+pymongo/read_preferences.py
 pymongo/replica_set_connection.py
 pymongo/son_manipulator.py
 pymongo/uri_parser.py
@@ -120,6 +120,7 @@ test/test_pooling.py
 test/test_pooling_base.py
 test/test_pooling_gevent.py
 test/test_pymongo.py
+test/test_read_preferences.py
 test/test_replica_set_connection.py
 test/test_son.py
 test/test_son_manipulator.py
@@ -130,8 +131,9 @@ test/test_timestamp.py
 test/test_uri_parser.py
 test/utils.py
 test/version.py
-test/replica/replset_tools.py
-test/replica/test_replica_set.py
+test/high_availability/ha_tools.py
+test/high_availability/test_ha.py
+test/mod_wsgi_test/test_client.py
 tools/README.rst
 tools/benchmark.py
 tools/clean.py
