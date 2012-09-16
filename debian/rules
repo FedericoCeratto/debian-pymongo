@@ -20,10 +20,10 @@ override_dh_installchangelogs:
 	dh_installchangelogs doc/changelog.rst
 
 override_dh_auto_install:
-	dh_auto_install
 	for py3 in $(PY3VERS); do \
 		$$py3 setup.py install --install-layout=deb --force --no-compile -O0 --root=$(ROOT); \
 	done
+	dh_auto_install
 
 override_dh_auto_clean:
 	rm -rf debian/html
