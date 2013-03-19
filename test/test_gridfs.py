@@ -16,6 +16,9 @@
 
 """Tests for the gridfs package.
 """
+import sys
+sys.path[0:0] = [""]
+
 from gridfs.grid_file import GridIn
 from pymongo.connection import Connection
 from pymongo.errors import AutoReconnect
@@ -26,9 +29,6 @@ import datetime
 import unittest
 import threading
 import time
-import sys
-sys.path[0:0] = [""]
-
 import gridfs
 
 from bson.py3compat import b, StringIO
@@ -270,9 +270,19 @@ class TestGridfs(unittest.TestCase):
         self.assertEqual(11, self.db.fs.chunks.count())
         self.assertEqual(b("hello world"), self.fs.get(oid).read())
 
-    def test_put_duplicate(self):
-        oid = self.fs.put(b("hello"))
-        self.assertRaises(FileExists, self.fs.put, "world", _id=oid)
+    def test_file_exists(self):
+        db = get_connection(w=1).pymongo_test
+        fs = gridfs.GridFS(db)
+
+        oid = fs.put(b("hello"))
+        self.assertRaises(FileExists, fs.put, b("world"), _id=oid)
+
+        one = fs.new_file(_id=123)
+        one.write(b("some content"))
+        one.close()
+
+        two = fs.new_file(_id=123)
+        self.assertRaises(FileExists, two.write, b('x' * 262146))
 
     def test_exists(self):
         oid = self.fs.put(b("hello"))
@@ -340,6 +350,27 @@ class TestGridfs(unittest.TestCase):
             n,
             self.db.fs.files.find({'filename':'test'}).count()
         )
+
+
+class TestGridfsRequest(unittest.TestCase):
+
+    def setUp(self):
+        # TODO: merge this into TestGridfs as we update all tests to use
+        #   MongoClient instead of Connection
+        from pymongo.mongo_client import MongoClient
+        from test.test_connection import host, port
+
+        # MongoClient defaults to w=1, auto_start_request=False
+        self.db = MongoClient(host, port, w=0).pymongo_test
+        self.db.drop_collection("fs.files")
+        self.db.drop_collection("fs.chunks")
+        self.fs = gridfs.GridFS(self.db)
+
+    def test_gridfs_request(self):
+        self.assertFalse(self.db.connection.in_request())
+        self.fs.put(b("hello world"))
+        # Request started and ended by put(), we're back to original state
+        self.assertFalse(self.db.connection.in_request())
 
 
 class TestGridfsReplicaSet(TestConnectionReplicaSetBase):

@@ -62,7 +62,8 @@ def _create_property(field_name, docstring,
     def setter(self, value):
         if self._closed:
             self._coll.files.update({"_id": self._file["_id"]},
-                                    {"$set": {field_name: value}}, safe=True)
+                                    {"$set": {field_name: value}},
+                                    **self._coll._get_wc_override())
         self._file[field_name] = value
 
     if read_only:
@@ -114,6 +115,26 @@ class GridIn(object):
             that is written to the file will be converted to
             :class:`bytes`.
 
+        If you turn off write-acknowledgment for performance reasons, it is
+        critical to wrap calls to :meth:`write` and :meth:`close` within a
+        single request:
+
+           >>> from pymongo import MongoClient
+           >>> from gridfs import GridFS
+           >>> client = MongoClient(w=0) # turn off write acknowledgment
+           >>> fs = GridFS(client)
+           >>> gridin = fs.new_file()
+           >>> request = client.start_request()
+           >>> try:
+           ...     for i in range(10):
+           ...         gridin.write('foo')
+           ...     gridin.close()
+           ... finally:
+           ...     request.end()
+
+        In Python 2.5 and later this code can be simplified with a
+        with-statement, see :doc:`/examples/requests` for more information.
+
         :Parameters:
           - `root_collection`: root collection to write to
           - `**kwargs` (optional): file level options (see above)
@@ -152,6 +173,7 @@ class GridIn(object):
     _id = _create_property("_id", "The ``'_id'`` value for this file.",
                             read_only=True)
     filename = _create_property("filename", "Name of this file.")
+    name = _create_property("filename", "Alias for `filename`.")
     content_type = _create_property("contentType", "Mime-type for this file.")
     length = _create_property("length", "Length (in bytes) of this file.",
                                closed_only=True)
@@ -170,10 +192,19 @@ class GridIn(object):
         raise AttributeError("GridIn object has no attribute '%s'" % name)
 
     def __setattr__(self, name, value):
-        object.__setattr__(self, name, value)
-        if self._closed:
-            self._coll.files.update({"_id": self._file["_id"]},
-                                    {"$set": {name: value}}, safe=True)
+        # For properties of this instance like _buffer, or descriptors set on
+        # the class like filename, use regular __setattr__
+        if name in self.__dict__ or name in self.__class__.__dict__:
+            object.__setattr__(self, name, value)
+        else:
+            # All other attributes are part of the document in db.fs.files.
+            # Store them to be sent to server on close() or if closed, send
+            # them now.
+            self._file[name] = value
+            if self._closed:
+                self._coll.files.update({"_id": self._file["_id"]},
+                                        {"$set": {name: value}},
+                                        **self._coll._get_wc_override())
 
     def __flush_data(self, data):
         """Flush `data` to a chunk.
@@ -186,7 +217,10 @@ class GridIn(object):
                  "n": self._chunk_number,
                  "data": Binary(data)}
 
-        self._chunks.insert(chunk)
+        try:
+            self._chunks.insert(chunk)
+        except DuplicateKeyError:
+            self._raise_file_exists(self._file['_id'])
         self._chunk_number += 1
         self._position += len(data)
 
@@ -200,19 +234,33 @@ class GridIn(object):
     def __flush(self):
         """Flush the file to the database.
         """
-        self.__flush_buffer()
-
-        md5 = self._coll.database.command("filemd5", self._id,
-                                          root=self._coll.name)["md5"]
-
-        self._file["md5"] = md5
-        self._file["length"] = self._position
-        self._file["uploadDate"] = datetime.datetime.utcnow()
-
         try:
-            return self._coll.files.insert(self._file, safe=True)
+            self.__flush_buffer()
+
+            db = self._coll.database
+
+            # See PYTHON-417, "Sharded GridFS fails with exception: chunks out
+            # of order." Inserts via mongos, even if they use a single
+            # connection, can succeed out-of-order due to the writebackListener.
+            # We mustn't call "filemd5" until all inserts are complete, which
+            # we ensure by calling getLastError (and ignoring the result).
+            db.error()
+
+            md5 = db.command(
+                "filemd5", self._id, root=self._coll.name)["md5"]
+
+            self._file["md5"] = md5
+            self._file["length"] = self._position
+            self._file["uploadDate"] = datetime.datetime.utcnow()
+
+            return self._coll.files.insert(self._file,
+                                           **self._coll._get_wc_override())
         except DuplicateKeyError:
-            raise FileExists("file with _id %r already exists" % self._id)
+            self._raise_file_exists(self._id)
+
+    def _raise_file_exists(self, file_id):
+        """Raise a FileExists exception for the given file_id."""
+        raise FileExists("file with _id %r already exists" % file_id)
 
     def close(self):
         """Flush the file and close it.
@@ -299,11 +347,11 @@ class GridIn(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Support for the context manager protocol.
 
-        Close the file and allow exceptions to propogate.
+        Close the file and allow exceptions to propagate.
         """
         self.close()
 
-        # propogate exceptions
+        # propagate exceptions
         return False
 
 
@@ -347,7 +395,8 @@ class GridOut(object):
         self.__position = 0
 
     _id = _create_property("_id", "The ``'_id'`` value for this file.", True)
-    name = _create_property("filename", "Name of this file.", True)
+    filename = _create_property("filename", "Name of this file.", True)
+    name = _create_property("filename", "Alias for `filename`.", True)
     content_type = _create_property("contentType", "Mime-type for this file.",
                                      True)
     length = _create_property("length", "Length (in bytes) of this file.",

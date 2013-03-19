@@ -3,8 +3,8 @@ Tutorial
 
 .. testsetup::
 
-  from pymongo import Connection
-  connection = Connection()
+  from pymongo import MongoClient
+  connection = MongoClient()
   connection.drop_database('test-database')
 
 This tutorial is intended as an introduction to working with
@@ -29,30 +29,30 @@ can start it like so:
 
   $ mongod
 
-Making a Connection
--------------------
+Making a Connection with MongoClient
+------------------------------------
 The first step when working with **PyMongo** is to create a
-:class:`~pymongo.connection.Connection` to the running **mongod**
+:class:`~pymongo.mongo_client.MongoClient` to the running **mongod**
 instance. Doing so is easy:
 
 .. doctest::
 
-  >>> from pymongo import Connection
-  >>> connection = Connection()
+  >>> from pymongo import MongoClient
+  >>> connection = MongoClient()
 
 The above code will connect on the default host and port. We can also
 specify the host and port explicitly, as follows:
 
 .. doctest::
 
-  >>> connection = Connection('localhost', 27017)
+  >>> connection = MongoClient('localhost', 27017)
 
 Getting a Database
 ------------------
 A single instance of MongoDB can support multiple independent
 `databases <http://www.mongodb.org/display/DOCS/Databases>`_. When
 working with PyMongo you access databases using attribute style access
-on :class:`~pymongo.connection.Connection` instances:
+on :class:`~pymongo.mongo_client.MongoClient` instances:
 
 .. doctest::
 
@@ -118,7 +118,8 @@ To insert a document into a collection we can use the
 .. doctest::
 
   >>> posts = db.posts
-  >>> posts.insert(post)
+  >>> post_id = posts.insert(post)
+  >>> post_id
   ObjectId('...')
 
 When a document is inserted a special key, ``"_id"``, is automatically
@@ -138,11 +139,10 @@ of the collections in our database:
 .. doctest::
 
   >>> db.collection_names()
-  [u'posts', u'system.indexes']
+  [u'system.indexes', u'posts']
 
 .. note:: The *system.indexes* collection is a special internal
    collection that was created automatically.
-
 
 Getting a Single Document With :meth:`~pymongo.collection.Collection.find_one`
 ------------------------------------------------------------------------------
@@ -178,6 +178,42 @@ If we try with a different author, like "Eliot", we'll get no result:
 .. doctest::
 
   >>> posts.find_one({"author": "Eliot"})
+  >>>
+
+.. _querying-by-objectid:
+
+Querying By ObjectId
+--------------------
+We can also find a post by its ``_id``, which in our example is an ObjectId:
+
+.. doctest::
+
+  >>> post_id
+  ObjectId(...)
+  >>> posts.find_one({"_id": post_id})
+  {u'date': datetime.datetime(...), u'text': u'My first blog post!', u'_id': ObjectId('...'), u'author': u'Mike', u'tags': [u'mongodb', u'python', u'pymongo']}
+
+Note that an ObjectId is not the same as its string representation:
+
+.. doctest::
+
+  >>> post_id_as_str = str(post_id)
+  >>> posts.find_one({"_id": post_id_as_str}) # No result
+  >>>
+
+A common task in web applications is to get an ObjectId from the
+request URL and find the matching document. It's necessary in this
+case to **convert the ObjectId from a string** before passing it to
+``find_one``::
+
+  from bson.objectid import ObjectId
+
+  # The web framework gets post_id from the URL and passes it as a string
+  def get(post_id):
+      # Convert from string to ObjectId:
+      document = connection.db.collection.find_one({'_id': ObjectId(post_id)})
+
+.. seealso:: :ref:`web-application-querying-by-objectid`
 
 A Note On Unicode Strings
 -------------------------

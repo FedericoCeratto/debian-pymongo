@@ -25,9 +25,9 @@ GEO2D = "2d"
 
 .. versionadded:: 1.5.1
 
-.. note:: Geo-spatial indexing requires server version **>= 1.3.3+**.
+.. note:: Geo-spatial indexing requires server version **>= 1.3.3**.
 
-.. _geospatial index: http://www.mongodb.org/display/DOCS/Geospatial+Indexing
+.. _geospatial index: http://docs.mongodb.org/manual/core/geospatial-indexes/
 """
 
 GEOHAYSTACK = "geoHaystack"
@@ -35,11 +35,10 @@ GEOHAYSTACK = "geoHaystack"
 
 .. versionadded:: 2.1
 
-.. note:: Geo-spatial indexing requires server version **>= 1.5.6+**.
+.. note:: Geo-spatial indexing requires server version **>= 1.5.6**.
 
-.. _geospatial index: http://www.mongodb.org/display/DOCS/Geospatial+Haystack+Indexing
+.. _haystack index: http://docs.mongodb.org/manual/core/geospatial-indexes/#haystack-indexes
 """
-
 
 OFF = 0
 """No database profiling."""
@@ -48,7 +47,7 @@ SLOW_ONLY = 1
 ALL = 2
 """Profile all operations."""
 
-version_tuple = (2, 3)
+version_tuple = (2, 4, 2)
 
 def get_version_string():
     if isinstance(version_tuple[-1], basestring):
@@ -59,6 +58,8 @@ version = get_version_string()
 """Current version of PyMongo."""
 
 from pymongo.connection import Connection
+from pymongo.mongo_client import MongoClient
+from pymongo.mongo_replica_set_client import MongoReplicaSetClient
 from pymongo.replica_set_connection import ReplicaSetConnection
 from pymongo.read_preferences import ReadPreference
 

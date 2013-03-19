@@ -15,27 +15,25 @@
 """Utilities for choosing which member of a replica set to read from."""
 
 import random
+import threading
 from collections import deque
 
 from pymongo.errors import ConfigurationError
 
 
 class ReadPreference:
-    """An enum that defines the read preferences supported by PyMongo. Used in
-    three cases:
+    """An enum that defines the read preference modes supported by PyMongo.
+    Used in three cases:
 
-    :class:`~pymongo.connection.Connection` to a single host:
+    :class:`~pymongo.mongo_client.MongoClient` connected to a single host:
 
-    * `PRIMARY`: Queries are allowed if the connection is to the replica set
-      primary.
-    * `PRIMARY_PREFERRED`: Queries are allowed if the connection is to the
-      primary or a secondary.
-    * `SECONDARY`: Queries are allowed if the connection is to a secondary.
-    * `SECONDARY_PREFERRED`: Same as `PRIMARY_PREFERRED`.
-    * `NEAREST`: Same as `PRIMARY_PREFERRED`.
+    * `PRIMARY`: Queries are allowed if the host is standalone or the replica
+      set primary.
+    * All other modes allow queries to standalone servers, to the primary, or
+      to secondaries.
 
-    :class:`~pymongo.connection.Connection` to a mongos, with a sharded cluster
-    of replica sets:
+    :class:`~pymongo.mongo_client.MongoClient` connected to a mongos, with a
+    sharded cluster of replica sets:
 
     * `PRIMARY`: Queries are sent to the primary of a shard.
     * `PRIMARY_PREFERRED`: Queries are sent to the primary if available,
@@ -46,7 +44,7 @@ class ReadPreference:
       or the primary if no secondary is available.
     * `NEAREST`: Queries are distributed among all members of a shard.
 
-    :class:`~pymongo.replica_set_connection.ReplicaSetConnection`:
+    :class:`~pymongo.mongo_replica_set_client.MongoReplicaSetClient`:
 
     * `PRIMARY`: Queries are sent to the primary of the replica set.
     * `PRIMARY_PREFERRED`: Queries are sent to the primary if available,
@@ -74,6 +72,21 @@ modes = {
     ReadPreference.NEAREST:             'NEAREST',
 }
 
+_mongos_modes = [
+    'primary',
+    'primaryPreferred',
+    'secondary',
+    'secondaryPreferred',
+    'nearest',
+]
+
+def mongos_mode(mode):
+    return _mongos_modes[mode]
+
+def mongos_enum(enum):
+    return _mongos_modes.index(enum)
+
+
 def select_primary(members):
     for member in members:
         if member.is_primary:
@@ -93,6 +106,10 @@ def select_member_with_tags(members, tags, secondary_only, latency):
             continue
 
         if secondary_only and candidate.is_primary:
+            continue
+
+        if not (candidate.is_primary or candidate.is_secondary):
+            # In RECOVERING or similar state
             continue
 
         if candidate.matches_tags(tags):
@@ -179,30 +196,32 @@ secondary_ok_commands = frozenset([
 
 
 class MovingAverage(object):
-    """Tracks a moving average. Not thread-safe.
+    """Tracks a moving average.
     """
     def __init__(self, window_sz):
         self.window_sz = window_sz
         self.samples = deque()
         self.total = 0
+        self.lock = threading.Lock()
 
     def update(self, sample):
-        self.samples.append(sample)
-        self.total += sample
-        if len(self.samples) > self.window_sz:
-            self.total -= self.samples.popleft()
+        # One reason we synchronize MovingAverage is that Jython's
+        # popleft isn't safe: http://bugs.jython.org/issue2001
+        self.lock.acquire()
+        try:
+            self.samples.append(sample)
+            self.total += sample
+            if len(self.samples) > self.window_sz:
+                self.total -= self.samples.popleft()
+        finally:
+            self.lock.release()
 
     def get(self):
-        if self.samples:
-            return self.total / float(len(self.samples))
-        else:
-            return None
-
-def mongos_mode(mode):
-    return {
-        ReadPreference.PRIMARY:             'primary',
-        ReadPreference.PRIMARY_PREFERRED:   'primaryPreferred',
-        ReadPreference.SECONDARY:           'secondary',
-        ReadPreference.SECONDARY_PREFERRED: 'secondaryPreferred',
-        ReadPreference.NEAREST:             'nearest',
-    }[mode]
+        self.lock.acquire()
+        try:
+            if self.samples:
+                return self.total / float(len(self.samples))
+            else:
+                return None
+        finally:
+            self.lock.release()

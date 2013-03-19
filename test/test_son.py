@@ -14,9 +14,11 @@
 
 """Tests for the son module."""
 
-import unittest
-import sys
+import copy
 import pickle
+import re
+import sys
+import unittest
 sys.path[0:0] = [""]
 
 from nose.plugins.skip import SkipTest
@@ -31,39 +33,67 @@ class TestSON(unittest.TestCase):
         pass
 
     def test_ordered_dict(self):
-        a = SON()
-        a["hello"] = "world"
-        a["mike"] = "awesome"
-        a["hello_"] = "mike"
-        self.assertEqual(a.items(), [("hello", "world"),
+        a1 = SON()
+        a1["hello"] = "world"
+        a1["mike"] = "awesome"
+        a1["hello_"] = "mike"
+        self.assertEqual(a1.items(), [("hello", "world"),
                                      ("mike", "awesome"),
                                      ("hello_", "mike")])
 
-        b = SON({"hello": "world"})
-        self.assertEqual(b["hello"], "world")
-        self.assertRaises(KeyError, lambda: b["goodbye"])
+        b2 = SON({"hello": "world"})
+        self.assertEqual(b2["hello"], "world")
+        self.assertRaises(KeyError, lambda: b2["goodbye"])
+
+    def test_equality(self):
+        a1 = SON({"hello": "world"})
+        b2 = SON((('hello', 'world'), ('mike', 'awesome'), ('hello_', 'mike')))
+
+        self.assertEqual(a1, SON({"hello": "world"}))
+        self.assertEqual(b2, SON((('hello', 'world'),
+                                  ('mike', 'awesome'),
+                                  ('hello_', 'mike'))))
+        self.assertEqual(b2, dict((('hello_', 'mike'),
+                                   ('mike', 'awesome'),
+                                   ('hello', 'world'))))
+
+        self.assertNotEqual(a1, b2)
+        self.assertNotEqual(b2, SON((('hello_', 'mike'),
+                                     ('mike', 'awesome'),
+                                     ('hello', 'world'))))
+
+        # Explicitly test inequality
+        self.assertFalse(a1 != SON({"hello": "world"}))
+        self.assertFalse(b2 != SON((('hello', 'world'),
+                                    ('mike', 'awesome'),
+                                    ('hello_', 'mike'))))
+        self.assertFalse(b2 != dict((('hello_', 'mike'),
+                                     ('mike', 'awesome'),
+                                     ('hello', 'world'))))
 
     def test_to_dict(self):
-        a = SON()
-        b = SON([("blah", SON())])
-        c = SON([("blah", [SON()])])
-        d = SON([("blah", {"foo": SON()})])
-        self.assertEqual({}, a.to_dict())
-        self.assertEqual({"blah": {}}, b.to_dict())
-        self.assertEqual({"blah": [{}]}, c.to_dict())
-        self.assertEqual({"blah": {"foo": {}}}, d.to_dict())
-        self.assertEqual(dict, a.to_dict().__class__)
-        self.assertEqual(dict, b.to_dict()["blah"].__class__)
-        self.assertEqual(dict, c.to_dict()["blah"][0].__class__)
-        self.assertEqual(dict, d.to_dict()["blah"]["foo"].__class__)
+        a1 = SON()
+        b2 = SON([("blah", SON())])
+        c3 = SON([("blah", [SON()])])
+        d4 = SON([("blah", {"foo": SON()})])
+        self.assertEqual({}, a1.to_dict())
+        self.assertEqual({"blah": {}}, b2.to_dict())
+        self.assertEqual({"blah": [{}]}, c3.to_dict())
+        self.assertEqual({"blah": {"foo": {}}}, d4.to_dict())
+        self.assertEqual(dict, a1.to_dict().__class__)
+        self.assertEqual(dict, b2.to_dict()["blah"].__class__)
+        self.assertEqual(dict, c3.to_dict()["blah"][0].__class__)
+        self.assertEqual(dict, d4.to_dict()["blah"]["foo"].__class__)
 
     def test_pickle(self):
 
         simple_son = SON([])
-        complex_son = SON([('son', simple_son), ('list', [simple_son, simple_son])])
+        complex_son = SON([('son', simple_son),
+                           ('list', [simple_son, simple_son])])
 
-        for protocol in [0, 1, 2, -1]:
-            pickled = pickle.loads(pickle.dumps(complex_son, protocol=protocol))
+        for protocol in xrange(pickle.HIGHEST_PROTOCOL + 1):
+            pickled = pickle.loads(pickle.dumps(complex_son,
+                                                protocol=protocol))
             self.assertEqual(pickled['son'], pickled['list'][0])
             self.assertEqual(pickled['son'], pickled['list'][1])
 
@@ -82,6 +112,41 @@ class TestSON(unittest.TestCase):
         )
         son_2_1_1 = pickle.loads(pickled_with_2_1_1)
         self.assertEqual(son_2_1_1, SON([]))
+
+    def test_copying(self):
+        simple_son = SON([])
+        complex_son = SON([('son', simple_son),
+                           ('list', [simple_son, simple_son])])
+        regex_son = SON([("x", re.compile("^hello.*"))])
+        reflexive_son = SON([('son', simple_son)])
+        reflexive_son["reflexive"] = reflexive_son
+
+        simple_son1 = copy.copy(simple_son)
+        self.assertEqual(simple_son, simple_son1)
+
+        complex_son1 = copy.copy(complex_son)
+        self.assertEqual(complex_son, complex_son1)
+
+        regex_son1 = copy.copy(regex_son)
+        self.assertEqual(regex_son, regex_son1)
+
+        reflexive_son1 = copy.copy(reflexive_son)
+        self.assertEqual(reflexive_son, reflexive_son1)
+
+        # Test deepcopying
+        simple_son1 = copy.deepcopy(simple_son)
+        self.assertEqual(simple_son, simple_son1)
+
+        regex_son1 = copy.deepcopy(regex_son)
+        self.assertEqual(regex_son, regex_son1)
+
+        complex_son1 = copy.deepcopy(complex_son)
+        self.assertEqual(complex_son, complex_son1)
+
+        reflexive_son1 = copy.deepcopy(reflexive_son)
+        self.assertEqual(reflexive_son.keys(), reflexive_son1.keys())
+        self.assertEqual(id(reflexive_son1), id(reflexive_son1["reflexive"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,8 +15,15 @@
 """Utilities for testing pymongo
 """
 
-from pymongo.errors import AutoReconnect
+import threading
 
+from pymongo.errors import AutoReconnect
+from pymongo.pool import NO_REQUEST, NO_SOCKET_YET, SocketInfo
+
+
+def one(s):
+    """Get one element of a set"""
+    return iter(s).next()
 
 def delay(sec):
     # Javascript sleep() only available in MongoDB since version ~1.9
@@ -51,6 +58,130 @@ def joinall(threads):
 def is_mongos(conn):
     res = conn.admin.command('ismaster')
     return res.get('msg', '') == 'isdbgrid'
+
+def assertRaisesExactly(cls, fn, *args, **kwargs):
+    """
+    Unlike the standard assertRaises, this checks that a function raises a
+    specific class of exception, and not a subclass. E.g., check that
+    Connection() raises ConnectionFailure but not its subclass, AutoReconnect.
+    """
+    try:
+        fn(*args, **kwargs)
+    except Exception, e:
+        assert e.__class__ == cls, "got %s, expected %s" % (
+            e.__class__.__name__, cls.__name__)
+    else:
+        raise AssertionError("%s not raised" % cls)
+
+def looplet(greenlets):
+    """World's smallest event loop; run until all greenlets are done
+    """
+    while True:
+        done = True
+
+        for g in greenlets:
+            if not g.dead:
+                done = False
+                g.switch()
+
+        if done:
+            return
+
+class RendezvousThread(threading.Thread):
+    """A thread that starts and pauses at a rendezvous point before resuming.
+    To be used in tests that must ensure that N threads are all alive
+    simultaneously, regardless of thread-scheduling's vagaries.
+
+    1. Write a subclass of RendezvousThread and override before_rendezvous
+      and / or after_rendezvous.
+    2. Create a state with RendezvousThread.shared_state(N)
+    3. Start N of your subclassed RendezvousThreads, passing the state to each
+      one's __init__
+    4. In the main thread, call RendezvousThread.wait_for_rendezvous
+    5. Test whatever you need to test while threads are paused at rendezvous
+      point
+    6. In main thread, call RendezvousThread.resume_after_rendezvous
+    7. Join all threads from main thread
+    8. Assert that all threads' "passed" attribute is True
+    9. Test post-conditions
+    """
+    class RendezvousState(object):
+        def __init__(self, nthreads):
+            # Number of threads total
+            self.nthreads = nthreads
+    
+            # Number of threads that have arrived at rendezvous point
+            self.arrived_threads = 0
+            self.arrived_threads_lock = threading.Lock()
+    
+            # Set when all threads reach rendezvous
+            self.ev_arrived = threading.Event()
+    
+            # Set by resume_after_rendezvous() so threads can continue.
+            self.ev_resume = threading.Event()
+            
+
+    @classmethod
+    def create_shared_state(cls, nthreads):
+        return RendezvousThread.RendezvousState(nthreads)
+
+    def before_rendezvous(self):
+        """Overridable: Do this before the rendezvous"""
+        pass
+
+    def after_rendezvous(self):
+        """Overridable: Do this after the rendezvous. If it throws no exception,
+        `passed` is set to True
+        """
+        pass
+
+    @classmethod
+    def wait_for_rendezvous(cls, state):
+        """Wait for all threads to reach rendezvous and pause there"""
+        state.ev_arrived.wait(10)
+        assert state.ev_arrived.isSet(), "Thread timeout"
+        assert state.nthreads == state.arrived_threads
+
+    @classmethod
+    def resume_after_rendezvous(cls, state):
+        """Tell all the paused threads to continue"""
+        state.ev_resume.set()
+
+    def __init__(self, state):
+        """Params:
+          `state`: A shared state object from RendezvousThread.shared_state()
+        """
+        super(RendezvousThread, self).__init__()
+        self.state = state
+        self.passed = False
+
+        # If this thread fails to terminate, don't hang the whole program
+        self.setDaemon(True)
+
+    def _rendezvous(self):
+        """Pause until all threads arrive here"""
+        s = self.state
+        s.arrived_threads_lock.acquire()
+        s.arrived_threads += 1
+        if s.arrived_threads == s.nthreads:
+            s.arrived_threads_lock.release()
+            s.ev_arrived.set()
+        else:
+            s.arrived_threads_lock.release()
+            s.ev_arrived.wait()
+
+    def run(self):
+        try:
+            self.before_rendezvous()
+        finally:
+            self._rendezvous()
+
+        # all threads have passed the rendezvous, wait for
+        # resume_after_rendezvous()
+        self.state.ev_resume.wait()
+
+        self.after_rendezvous()
+        self.passed = True
 
 def read_from_which_host(
     rsc,
@@ -94,26 +225,26 @@ def assertReadFrom(testcase, rsc, member, *args, **kwargs):
     :Parameters:
       - `testcase`: A unittest.TestCase
       - `rsc`: A ReplicaSetConnection
-      - `member`: replica_set_connection.Member expected to be used
+      - `member`: A host:port expected to be used
       - `mode`: A ReadPreference
-      - `tag_sets`: List of dicts of tags for data-center-aware reads
-      - `secondary_acceptable_latency_ms`: a float
+      - `tag_sets` (optional): List of dicts of tags for data-center-aware reads
+      - `secondary_acceptable_latency_ms` (optional): a float
     """
     for _ in range(10):
         testcase.assertEqual(member, read_from_which_host(rsc, *args, **kwargs))
 
 def assertReadFromAll(testcase, rsc, members, *args, **kwargs):
     """Check that a query with the given mode, tag_sets, and
-       secondary_acceptable_latency_ms can read from any of a set of
-       replica-set members.
+    secondary_acceptable_latency_ms reads from all members in a set, and
+    only members in that set.
 
     :Parameters:
       - `testcase`: A unittest.TestCase
       - `rsc`: A ReplicaSetConnection
-      - `members`: Sequence of replica_set_connection.Member expected to be used
+      - `members`: Sequence of host:port expected to be used
       - `mode`: A ReadPreference
-      - `tag_sets`: List of dicts of tags for data-center-aware reads
-      - `secondary_acceptable_latency_ms`: a float
+      - `tag_sets` (optional): List of dicts of tags for data-center-aware reads
+      - `secondary_acceptable_latency_ms` (optional): a float
     """
     members = set(members)
     used = set()
@@ -121,3 +252,57 @@ def assertReadFromAll(testcase, rsc, members, *args, **kwargs):
         used.add(read_from_which_host(rsc, *args, **kwargs))
 
     testcase.assertEqual(members, used)
+
+class TestRequestMixin(object):
+    """Inherit from this class and from unittest.TestCase to get some
+    convenient methods for testing connection-pools and requests
+    """
+    def get_sock(self, pool):
+        # Connection calls Pool.get_socket((host, port)), whereas RSC sets
+        # Pool.pair at construction-time and just calls Pool.get_socket().
+        # Deal with either case so we can use TestRequestMixin to test pools
+        # from Connection and from RSC.
+        if not pool.pair:
+            # self is test_connection.TestConnection
+            self.assertTrue(hasattr(self, 'host') and hasattr(self, 'port'))
+            sock_info = pool.get_socket((self.host, self.port))
+        else:
+            sock_info = pool.get_socket()
+        return sock_info
+
+    def assertSameSock(self, pool):
+        sock_info0 = self.get_sock(pool)
+        sock_info1 = self.get_sock(pool)
+        self.assertEqual(sock_info0, sock_info1)
+        pool.maybe_return_socket(sock_info0)
+        pool.maybe_return_socket(sock_info1)
+
+    def assertDifferentSock(self, pool):
+        sock_info0 = self.get_sock(pool)
+        sock_info1 = self.get_sock(pool)
+        self.assertNotEqual(sock_info0, sock_info1)
+        pool.maybe_return_socket(sock_info0)
+        pool.maybe_return_socket(sock_info1)
+
+    def assertNoRequest(self, pool):
+        self.assertEqual(NO_REQUEST, pool._get_request_state())
+
+    def assertNoSocketYet(self, pool):
+        self.assertEqual(NO_SOCKET_YET, pool._get_request_state())
+
+    def assertRequestSocket(self, pool):
+        self.assertTrue(isinstance(pool._get_request_state(), SocketInfo))
+
+    def assertInRequestAndSameSock(self, conn, pools):
+        self.assertTrue(conn.in_request())
+        if not isinstance(pools, list):
+            pools = [pools]
+        for pool in pools:
+            self.assertSameSock(pool)
+
+    def assertNotInRequestAndDifferentSock(self, conn, pools):
+        self.assertFalse(conn.in_request())
+        if not isinstance(pools, list):
+            pools = [pools]
+        for pool in pools:
+            self.assertDifferentSock(pool)

@@ -18,10 +18,11 @@
 
          Raises :class:`~pymongo.errors.InvalidName` if an invalid collection name is used.
 
-      .. autoattribute:: slave_okay
       .. autoattribute:: read_preference
       .. autoattribute:: tag_sets
       .. autoattribute:: secondary_acceptable_latency_ms
+      .. autoattribute:: write_concern
+      .. autoattribute:: slave_okay
       .. autoattribute:: safe
       .. automethod:: get_lasterror_options
       .. automethod:: set_lasterror_options
