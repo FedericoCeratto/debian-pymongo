@@ -26,6 +26,7 @@ import time
 from stat import S_IRUSR
 
 import pymongo
+import pymongo.errors
 
 home = os.environ.get('HOME')
 default_dbpath = os.path.join(home, 'data', 'pymongo_high_availability')
@@ -38,6 +39,8 @@ mongod = os.environ.get('MONGOD', 'mongod')
 mongos = os.environ.get('MONGOS', 'mongos')
 set_name = os.environ.get('SETNAME', 'repl0')
 use_greenlets = bool(os.environ.get('GREENLETS'))
+ha_tools_debug = bool(os.environ.get('HA_TOOLS_DEBUG'))
+
 
 nodes = {}
 routers = {}
@@ -47,6 +50,8 @@ cur_port = port
 def kill_members(members, sig, hosts=nodes):
     for member in members:
         try:
+            if ha_tools_debug:
+                print 'killing', member
             proc = hosts[member]['proc']
             # Not sure if cygwin makes sense here...
             if sys.platform in ('win32', 'cygwin'):
@@ -54,6 +59,8 @@ def kill_members(members, sig, hosts=nodes):
             else:
                 os.kill(proc.pid, sig)
         except OSError:
+            if ha_tools_debug:
+                print member, 'already dead?'
             pass  # already dead
 
 
@@ -101,10 +108,7 @@ def start_replica_set(members, auth=False, fresh=True):
                 f.close()
             os.chmod(key_file, S_IRUSR)
 
-    cur_port = port
-
     for i in xrange(len(members)):
-        cur_port = cur_port + i
         host = '%s:%d' % (hostname, cur_port)
         members[i].update({'_id': i, 'host': host})
         path = os.path.join(dbpath, 'db' + str(i))
@@ -121,21 +125,33 @@ def start_replica_set(members, auth=False, fresh=True):
                '--logappend', '--logpath', member_logpath]
         if auth:
             cmd += ['--keyFile', key_file]
+
+        if ha_tools_debug:
+            print 'starting', ' '.join(cmd)
+
         proc = subprocess.Popen(cmd,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT)
         nodes[host] = {'proc': proc, 'cmd': cmd}
         res = wait_for(proc, cur_port)
+
+        cur_port += 1
+
         if not res:
             return None
+
     config = {'_id': set_name, 'members': members}
     primary = members[0]['host']
     c = pymongo.Connection(primary, use_greenlets=use_greenlets)
     try:
+        if ha_tools_debug:
+            print 'rs.initiate(%s)' % config
+
         c.admin.command('replSetInitiate', config)
-    except pymongo.errors.OperationFailure:
+    except pymongo.errors.OperationFailure, e:
         # Already initialized from a previous run?
-        pass
+        if ha_tools_debug:
+            print e
 
     expected_arbiters = 0
     for member in members:
@@ -145,16 +161,19 @@ def start_replica_set(members, auth=False, fresh=True):
 
     # Wait for 8 minutes for replica set to come up
     patience = 8
-    for _ in range(patience * 60 / 2):
+    for i in range(patience * 60 / 2):
         time.sleep(2)
         try:
             if (get_primary() and
                 len(get_secondaries()) == expected_secondaries and
                 len(get_arbiters()) == expected_arbiters):
                 break
-        except pymongo.errors.AutoReconnect:
+        except pymongo.errors.ConnectionFailure:
             # Keep waiting
             pass
+
+        if ha_tools_debug:
+            print 'waiting for RS', i
     else:
         kill_all_members()
         raise Exception(
@@ -166,7 +185,6 @@ def create_sharded_cluster(num_routers=3):
     global cur_port
 
     # Start a config server
-    cur_port = port
     configdb_host = '%s:%d' % (hostname, cur_port)
     path = os.path.join(dbpath, 'configdb')
     if not os.path.exists(path):
@@ -266,7 +284,7 @@ def get_primary():
         assert len(primaries) <= 1
         if primaries:
             return primaries[0]
-    except pymongo.errors.AutoReconnect:
+    except pymongo.errors.ConnectionFailure:
         pass
 
     return None
@@ -285,6 +303,10 @@ def get_secondaries():
 
 def get_arbiters():
     return get_members_in_state(7)
+
+
+def get_recovering():
+    return get_members_in_state(3)
 
 
 def get_passives():
@@ -344,6 +366,19 @@ def stepdown_primary():
             c.admin.command('replSetStepDown', 20)
         except:
             pass
+
+
+def set_maintenance(member, value):
+    """Put a member into RECOVERING state if value is True, else normal state.
+    """
+    c = pymongo.Connection(member, use_greenlets=use_greenlets)
+    c.admin.command('replSetMaintenance', value)
+    start = time.time()
+    while value != (member in get_recovering()):
+        assert (time.time() - start) <= 10, (
+            "Member %s never switched state" % member)
+
+        time.sleep(0.25)
 
 
 def restart_members(members, router=False):

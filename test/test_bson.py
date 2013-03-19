@@ -203,7 +203,7 @@ class TestBSON(unittest.TestCase):
         doc_class = dict
         # Work around http://bugs.jython.org/issue1728
         if (sys.platform.startswith('java') and
-            sys.version_info[:3] == (2, 5, 2)):
+            sys.version_info[:3] >= (2, 5, 2)):
             doc_class = SON
 
         def encode_then_decode(doc):
@@ -224,20 +224,20 @@ class TestBSON(unittest.TestCase):
 
     def test_datetime_encode_decode(self):
         # Negative timestamps
-        dt1 = datetime.datetime(1, 1, 1, 1, 1, 1)
+        dt1 = datetime.datetime(1, 1, 1, 1, 1, 1, 111000)
         dt2 = BSON.encode({"date": dt1}).decode()["date"]
         self.assertEqual(dt1, dt2)
 
-        dt1 = datetime.datetime(1959, 6, 25, 12, 16, 59)
+        dt1 = datetime.datetime(1959, 6, 25, 12, 16, 59, 999000)
         dt2 = BSON.encode({"date": dt1}).decode()["date"]
         self.assertEqual(dt1, dt2)
 
         # Positive timestamps
-        dt1 = datetime.datetime(9999, 12, 31, 23, 59, 59)
+        dt1 = datetime.datetime(9999, 12, 31, 23, 59, 59, 999000)
         dt2 = BSON.encode({"date": dt1}).decode()["date"]
         self.assertEqual(dt1, dt2)
 
-        dt1 = datetime.datetime(2011, 6, 14, 10, 47, 53)
+        dt1 = datetime.datetime(2011, 6, 14, 10, 47, 53, 444000)
         dt2 = BSON.encode({"date": dt1}).decode()["date"]
         self.assertEqual(dt1, dt2)
 

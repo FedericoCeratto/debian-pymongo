@@ -62,6 +62,8 @@ doc/api/pymongo/errors.rst
 doc/api/pymongo/index.rst
 doc/api/pymongo/master_slave_connection.rst
 doc/api/pymongo/message.rst
+doc/api/pymongo/mongo_client.rst
+doc/api/pymongo/mongo_replica_set_client.rst
 doc/api/pymongo/pool.rst
 doc/api/pymongo/replica_set_connection.rst
 doc/api/pymongo/son_manipulator.rst
@@ -89,10 +91,13 @@ pymongo/errors.py
 pymongo/helpers.py
 pymongo/master_slave_connection.py
 pymongo/message.py
+pymongo/mongo_client.py
+pymongo/mongo_replica_set_client.py
 pymongo/pool.py
 pymongo/read_preferences.py
 pymongo/replica_set_connection.py
 pymongo/son_manipulator.py
+pymongo/thread_util.py
 pymongo/uri_parser.py
 pymongo.egg-info/PKG-INFO
 pymongo.egg-info/SOURCES.txt
@@ -125,6 +130,7 @@ test/test_replica_set_connection.py
 test/test_son.py
 test/test_son_manipulator.py
 test/test_ssl.py
+test/test_thread_util.py
 test/test_threads.py
 test/test_threads_replica_set_connection.py
 test/test_timestamp.py

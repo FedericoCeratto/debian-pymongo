@@ -29,12 +29,11 @@ from nose.plugins.skip import SkipTest
 
 import pymongo.pool
 from pymongo.connection import Connection
-from pymongo.pool import (
-    Pool, GreenletPool, NO_REQUEST, NO_SOCKET_YET, SocketInfo)
+from pymongo.pool import Pool, NO_REQUEST, NO_SOCKET_YET, SocketInfo
 from pymongo.errors import ConfigurationError
 from test import version
 from test.test_connection import get_connection, host, port
-from test.utils import delay, is_mongos
+from test.utils import delay, is_mongos, one
 
 N = 50
 DB = "pymongo-pooling-tests"
@@ -51,11 +50,6 @@ try:
     has_gevent = True
 except ImportError:
     has_gevent = False
-
-
-def one(s):
-    """Get one element of a set"""
-    return iter(s).next()
 
 
 class MongoThread(object):
@@ -178,7 +172,7 @@ class OneOp(MongoThread):
         super(OneOp, self).__init__(ut)
 
     def run_mongo_thread(self):
-        pool = self.connection._Connection__pool
+        pool = self.connection._MongoClient__pool
         assert len(pool.sockets) == 1, "Expected 1 socket, found %d" % (
             len(pool.sockets)
         )
@@ -275,9 +269,9 @@ class _TestPoolingBase(object):
         db = self.c[DB]
         db.unique.drop()
         db.test.drop()
-        db.unique.insert({"_id": "jesse"})
+        db.unique.insert({"_id": "jesse"}, safe=True)
 
-        db.test.insert([{} for i in range(10)])
+        db.test.insert([{} for i in range(10)], safe=True)
 
     def tearDown(self):
         self.c.close()
@@ -291,36 +285,32 @@ class _TestPoolingBase(object):
         return get_connection(*args, **opts)
 
     def get_pool(self, *args, **kwargs):
-        if self.use_greenlets:
-            klass = GreenletPool
-        else:
-            klass = Pool
-
-        return klass(*args, **kwargs)
+        kwargs['use_greenlets'] = self.use_greenlets
+        return Pool(*args, **kwargs)
 
     def assert_no_request(self):
         self.assertEqual(
-            NO_REQUEST, self.c._Connection__pool._get_request_state()
+            NO_REQUEST, self.c._MongoClient__pool._get_request_state()
         )
 
     def assert_request_without_socket(self):
         self.assertEqual(
-            NO_SOCKET_YET, self.c._Connection__pool._get_request_state()
+            NO_SOCKET_YET, self.c._MongoClient__pool._get_request_state()
         )
 
     def assert_request_with_socket(self):
         self.assertTrue(isinstance(
-            self.c._Connection__pool._get_request_state(), SocketInfo
+            self.c._MongoClient__pool._get_request_state(), SocketInfo
         ))
 
     def assert_pool_size(self, pool_size):
         self.assertEqual(
-            pool_size, len(self.c._Connection__pool.sockets)
+            pool_size, len(self.c._MongoClient__pool.sockets)
         )
 
 
 class _TestPooling(_TestPoolingBase):
-    """Basic pool tests, to be applied both to Pool and GreenletPool"""
+    """Basic pool tests, to be run both with threads and with greenlets."""
     def test_max_pool_size_validation(self):
         self.assertRaises(
             ConfigurationError, Connection, host=host, port=port,
@@ -385,7 +375,7 @@ class _TestPooling(_TestPoolingBase):
         self.assert_pool_size(1)
         self.c.start_request()
         self.assert_request_without_socket()
-        self.c.test.test.find_one()
+        self.c.pymongo_test.test.find_one()
         self.assert_request_with_socket()
         self.assert_pool_size(0)
         self.c.end_request()
@@ -397,41 +387,41 @@ class _TestPooling(_TestPoolingBase):
         self.assertTrue(t.passed, "OneOp.run() threw exception")
 
         self.assert_pool_size(1)
-        self.c.test.test.find_one()
+        self.c.pymongo_test.test.find_one()
         self.assert_pool_size(1)
 
     def test_multiple_connections(self):
         a = self.get_connection(auto_start_request=False)
         b = self.get_connection(auto_start_request=False)
-        self.assertEqual(1, len(a._Connection__pool.sockets))
-        self.assertEqual(1, len(b._Connection__pool.sockets))
+        self.assertEqual(1, len(a._MongoClient__pool.sockets))
+        self.assertEqual(1, len(b._MongoClient__pool.sockets))
 
         a.start_request()
-        a.test.test.find_one()
-        self.assertEqual(0, len(a._Connection__pool.sockets))
+        a.pymongo_test.test.find_one()
+        self.assertEqual(0, len(a._MongoClient__pool.sockets))
         a.end_request()
-        self.assertEqual(1, len(a._Connection__pool.sockets))
-        self.assertEqual(1, len(b._Connection__pool.sockets))
-        a_sock = one(a._Connection__pool.sockets)
+        self.assertEqual(1, len(a._MongoClient__pool.sockets))
+        self.assertEqual(1, len(b._MongoClient__pool.sockets))
+        a_sock = one(a._MongoClient__pool.sockets)
 
         b.end_request()
-        self.assertEqual(1, len(a._Connection__pool.sockets))
-        self.assertEqual(1, len(b._Connection__pool.sockets))
+        self.assertEqual(1, len(a._MongoClient__pool.sockets))
+        self.assertEqual(1, len(b._MongoClient__pool.sockets))
 
         b.start_request()
-        b.test.test.find_one()
-        self.assertEqual(1, len(a._Connection__pool.sockets))
-        self.assertEqual(0, len(b._Connection__pool.sockets))
+        b.pymongo_test.test.find_one()
+        self.assertEqual(1, len(a._MongoClient__pool.sockets))
+        self.assertEqual(0, len(b._MongoClient__pool.sockets))
 
         b.end_request()
-        b_sock = one(b._Connection__pool.sockets)
-        b.test.test.find_one()
-        a.test.test.find_one()
+        b_sock = one(b._MongoClient__pool.sockets)
+        b.pymongo_test.test.find_one()
+        a.pymongo_test.test.find_one()
 
         self.assertEqual(b_sock,
-                         b._Connection__pool.get_socket((b.host, b.port)))
+                         b._MongoClient__pool.get_socket((b.host, b.port)))
         self.assertEqual(a_sock,
-                         a._Connection__pool.get_socket((a.host, a.port)))
+                         a._MongoClient__pool.get_socket((a.host, a.port)))
 
         a_sock.close()
         b_sock.close()
@@ -669,8 +659,8 @@ class _TestPooling(_TestPoolingBase):
             # This is more or less a bug in Python <= 2.6. Accessing the thread
             # local from the main thread is a necessary part of this test, and
             # realistic: in a multithreaded web server a new thread will access
-            # Pool._local soon after an old thread has died.
-            getattr(cx_pool._local, 'whatever', None)
+            # Pool._ident._local soon after an old thread has died.
+            cx_pool._ident.get()
 
         # Pool reclaimed the socket
         self.assertEqual(1, len(cx_pool.sockets))
@@ -679,8 +669,8 @@ class _TestPooling(_TestPoolingBase):
 
 class _TestMaxPoolSize(_TestPoolingBase):
     """Test that connection pool keeps proper number of idle sockets open,
-    no matter how start/end_request are called. To be applied both to Pool and
-    GreenletPool.
+    no matter how start/end_request are called. To be run both with threads and
+    with greenlets.
     """
     def _test_max_pool_size(self, start_request, end_request):
         c = self.get_connection(max_pool_size=4, auto_start_request=False)
@@ -710,7 +700,7 @@ class _TestMaxPoolSize(_TestPoolingBase):
 
         # Socket-reclamation doesn't work in Jython
         if not sys.platform.startswith('java'):
-            cx_pool = c._Connection__pool
+            cx_pool = c._MongoClient__pool
 
             # Socket-reclamation depends on timely garbage-collection
             if 'PyPy' in sys.version:
@@ -757,7 +747,7 @@ class _TestMaxPoolSize(_TestPoolingBase):
 
 class _TestPoolSocketSharing(_TestPoolingBase):
     """Directly test that two simultaneous operations don't share a socket. To
-    be applied both to Pool and GreenletPool.
+    be run both with threads and with greenlets.
     """
     def _test_pool(self, use_request):
         """

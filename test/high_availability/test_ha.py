@@ -14,6 +14,11 @@
 
 """Test replica set operations and failures."""
 
+# These test methods exuberantly violate the "one assert per test" rule, because
+# each method requires running setUp, which takes about 30 seconds to bring up
+# a replica set. Thus each method asserts everything we want to assert for a
+# given replica-set configuration.
+
 import time
 import unittest
 
@@ -23,18 +28,28 @@ from ha_tools import use_greenlets
 
 from pymongo import (ReplicaSetConnection,
                      ReadPreference)
-from pymongo.replica_set_connection import Member, Monitor
-from pymongo.connection import Connection, _partition_node
-from pymongo.errors import AutoReconnect, OperationFailure
+from pymongo.mongo_replica_set_client import Member, Monitor
+from pymongo.mongo_client import _partition_node
+from pymongo.connection import Connection
+from pymongo.errors import AutoReconnect, OperationFailure, ConnectionFailure
 
 from test import utils
+from test.utils import one
 
 
 # Override default 30-second interval for faster testing
 Monitor._refresh_interval = MONITOR_INTERVAL = 0.5
 
 
-class TestSecondaryConnection(unittest.TestCase):
+# To make the code terser, copy modes into module scope
+PRIMARY = ReadPreference.PRIMARY
+PRIMARY_PREFERRED = ReadPreference.PRIMARY_PREFERRED
+SECONDARY = ReadPreference.SECONDARY
+SECONDARY_PREFERRED = ReadPreference.SECONDARY_PREFERRED
+NEAREST = ReadPreference.NEAREST
+
+
+class TestDirectConnection(unittest.TestCase):
 
     def setUp(self):
         members = [{}, {}, {'arbiterOnly': True}]
@@ -48,9 +63,9 @@ class TestSecondaryConnection(unittest.TestCase):
         db = self.c.pymongo_test
         db.test.remove({}, safe=True, w=len(self.c.secondaries))
 
-        # Force replication...
+        # Wait for replication...
         w = len(self.c.secondaries) + 1
-        db.test.insert({'foo': 'bar'}, safe=True, w=w)
+        db.test.insert({'foo': 'bar'}, w=w)
 
         # Test direct connection to a primary or secondary
         primary_host, primary_port = ha_tools.get_primary().split(':')
@@ -58,33 +73,29 @@ class TestSecondaryConnection(unittest.TestCase):
         (secondary_host,
          secondary_port) = ha_tools.get_secondaries()[0].split(':')
         secondary_port = int(secondary_port)
+        arbiter_host, arbiter_port = ha_tools.get_arbiters()[0].split(':')
+        arbiter_port = int(arbiter_port)
 
-        self.assertTrue(Connection(
-            primary_host, primary_port, use_greenlets=use_greenlets).is_primary)
-
-        self.assertTrue(Connection(
-            primary_host, primary_port, use_greenlets=use_greenlets,
-            read_preference=ReadPreference.PRIMARY_PREFERRED).is_primary)
-
-        self.assertTrue(Connection(
-            primary_host, primary_port, use_greenlets=use_greenlets,
-            read_preference=ReadPreference.SECONDARY_PREFERRED).is_primary)
-
-        self.assertTrue(Connection(
-            primary_host, primary_port, use_greenlets=use_greenlets,
-            read_preference=ReadPreference.NEAREST).is_primary)
-
-        self.assertTrue(Connection(
-            primary_host, primary_port, use_greenlets=use_greenlets,
-            read_preference=ReadPreference.SECONDARY).is_primary)
-
+        # A Connection succeeds no matter the read preference
         for kwargs in [
-            {'read_preference': ReadPreference.PRIMARY_PREFERRED},
-            {'read_preference': ReadPreference.SECONDARY},
-            {'read_preference': ReadPreference.SECONDARY_PREFERRED},
-            {'read_preference': ReadPreference.NEAREST},
-            {'slave_okay': True},
+            {'read_preference': PRIMARY},
+            {'read_preference': PRIMARY_PREFERRED},
+            {'read_preference': SECONDARY},
+            {'read_preference': SECONDARY_PREFERRED},
+            {'read_preference': NEAREST},
+            {'slave_okay': True}
         ]:
+            conn = Connection(primary_host,
+                              primary_port,
+                              use_greenlets=use_greenlets,
+                              **kwargs)
+            self.assertEqual(primary_host, conn.host)
+            self.assertEqual(primary_port, conn.port)
+            self.assertTrue(conn.is_primary)
+
+            # Direct connection to primary can be queried with any read pref
+            self.assertTrue(conn.pymongo_test.test.find_one())
+
             conn = Connection(secondary_host,
                               secondary_port,
                               use_greenlets=use_greenlets,
@@ -92,16 +103,43 @@ class TestSecondaryConnection(unittest.TestCase):
             self.assertEqual(secondary_host, conn.host)
             self.assertEqual(secondary_port, conn.port)
             self.assertFalse(conn.is_primary)
-            self.assert_(conn.pymongo_test.test.find_one())
 
-        # Test direct connection to an arbiter
-        secondary_host = ha_tools.get_arbiters()[0]
-        host, port = ha_tools.get_arbiters()[0].split(':')
-        port = int(port)
-        conn = Connection(host, port)
-        self.assertEqual(host, conn.host)
-        self.assertEqual(port, conn.port)
+            # Direct connection to secondary can be queried with any read pref
+            # but PRIMARY
+            if kwargs.get('read_preference') != PRIMARY:
+                self.assertTrue(conn.pymongo_test.test.find_one())
+            else:
+                self.assertRaises(
+                    AutoReconnect, conn.pymongo_test.test.find_one)
 
+            # Since an attempt at an acknowledged write to a secondary from a
+            # direct connection raises AutoReconnect('not master'), Connection
+            # should do the same for unacknowledged writes.
+            try:
+                conn.pymongo_test.test.insert({}, safe=False)
+            except AutoReconnect, e:
+                self.assertEqual('not master', e.args[0])
+            else:
+                self.fail(
+                    'Unacknowledged insert into secondary connection %s should'
+                    'have raised exception' % conn)
+
+            # Test direct connection to an arbiter
+            conn = Connection(arbiter_host, arbiter_port, **kwargs)
+            self.assertEqual(arbiter_host, conn.host)
+            self.assertEqual(arbiter_port, conn.port)
+            self.assertFalse(conn.is_primary)
+            
+            # See explanation above
+            try:
+                conn.pymongo_test.test.insert({}, safe=False)
+            except AutoReconnect, e:
+                self.assertEqual('not master', e.args[0])
+            else:
+                self.fail(
+                    'Unacknowledged insert into arbiter connection %s should'
+                    'have raised exception' % conn)
+        
     def tearDown(self):
         self.c.close()
         ha_tools.kill_all_members()
@@ -122,38 +160,131 @@ class TestPassiveAndHidden(unittest.TestCase):
     def test_passive_and_hidden(self):
         self.c = ReplicaSetConnection(
             self.seed, replicaSet=self.name, use_greenlets=use_greenlets)
-        db = self.c.pymongo_test
-        w = len(self.c.secondaries) + 1
-        db.test.remove({}, safe=True, w=w)
-        db.test.insert({'foo': 'bar'}, safe=True, w=w)
 
         passives = ha_tools.get_passives()
         passives = [_partition_node(member) for member in passives]
-        hidden = ha_tools.get_hidden_members()
-        hidden = [_partition_node(member) for member in hidden]
         self.assertEqual(self.c.secondaries, set(passives))
 
-        for mode in (
-            ReadPreference.SECONDARY, ReadPreference.SECONDARY_PREFERRED
-        ):
-            db.read_preference = mode
-            for _ in xrange(10):
-                cursor = db.test.find()
-                cursor.next()
-                self.assertTrue(cursor._Cursor__connection_id in passives)
-                self.assertTrue(cursor._Cursor__connection_id not in hidden)
+        for mode in SECONDARY, SECONDARY_PREFERRED:
+            utils.assertReadFromAll(self, self.c, passives, mode)
 
         ha_tools.kill_members(ha_tools.get_passives(), 2)
         sleep(2 * MONITOR_INTERVAL)
-        db.read_preference = ReadPreference.SECONDARY_PREFERRED
-
-        for _ in xrange(10):
-            cursor = db.test.find()
-            cursor.next()
-            self.assertEqual(cursor._Cursor__connection_id, self.c.primary)
+        utils.assertReadFrom(self, self.c, self.c.primary, SECONDARY_PREFERRED)
 
     def tearDown(self):
         self.c.close()
+        ha_tools.kill_all_members()
+
+
+class TestMonitorRemovesRecoveringMember(unittest.TestCase):
+    # Members in STARTUP2 or RECOVERING states are shown in the primary's
+    # isMaster response, but aren't secondaries and shouldn't be read from.
+    # Verify that if a secondary goes into RECOVERING mode, the Monitor removes
+    # it from the set of readers.
+
+    def setUp(self):
+        members = [{}, {'priority': 0}, {'priority': 0}]
+        res = ha_tools.start_replica_set(members)
+        self.seed, self.name = res
+
+    def test_monitor_removes_recovering_member(self):
+        self.c = ReplicaSetConnection(
+            self.seed, replicaSet=self.name, use_greenlets=use_greenlets,
+            auto_start_request=False)
+
+        secondaries = ha_tools.get_secondaries()
+
+        for mode in SECONDARY, SECONDARY_PREFERRED:
+            partitioned_secondaries = [_partition_node(s) for s in secondaries]
+            utils.assertReadFromAll(self, self.c, partitioned_secondaries, mode)
+
+        secondary, recovering_secondary = secondaries
+        ha_tools.set_maintenance(recovering_secondary, True)
+        sleep(2 * MONITOR_INTERVAL)
+
+        for mode in SECONDARY, SECONDARY_PREFERRED:
+            # Don't read from recovering member
+            utils.assertReadFrom(self, self.c, _partition_node(secondary), mode)
+
+    def tearDown(self):
+        self.c.close()
+        ha_tools.kill_all_members()
+
+
+class TestTriggeredRefresh(unittest.TestCase):
+    # Verify that if a secondary goes into RECOVERING mode or if the primary
+    # changes, the next exception triggers an immediate refresh.
+
+    def setUp(self):
+        members = [{}, {}]
+        res = ha_tools.start_replica_set(members)
+        self.seed, self.name = res
+
+        # Disable periodic refresh
+        Monitor._refresh_interval = 1e6
+
+    def test_recovering_member_triggers_refresh(self):
+        # To test that find_one() and count() trigger immediate refreshes,
+        # we'll create a separate connection for each
+        self.c_find_one, self.c_count = [
+            ReplicaSetConnection(
+                self.seed, replicaSet=self.name, use_greenlets=use_greenlets,
+                auto_start_request=False, read_preference=SECONDARY)
+            for _ in xrange(2)]
+
+        # We've started the primary and one secondary
+        primary = ha_tools.get_primary()
+        secondary = ha_tools.get_secondaries()[0]
+
+        # Pre-condition: just make sure they all connected OK
+        for c in self.c_find_one, self.c_count:
+            self.assertEqual(one(c.secondaries), _partition_node(secondary))
+
+        ha_tools.set_maintenance(secondary, True)
+
+        # Trigger a refresh in various ways
+        self.assertRaises(AutoReconnect, self.c_find_one.test.test.find_one)
+        self.assertRaises(AutoReconnect, self.c_count.test.test.count)
+
+        # Wait for the immediate refresh to complete - we're not waiting for
+        # the periodic refresh, which has been disabled
+        sleep(1)
+
+        for c in self.c_find_one, self.c_count:
+            self.assertFalse(c.secondaries)
+            self.assertEqual(_partition_node(primary), c.primary)
+
+    def test_stepdown_triggers_refresh(self):
+        c_find_one = ReplicaSetConnection(
+            self.seed, replicaSet=self.name, use_greenlets=use_greenlets,
+            auto_start_request=False)
+
+        # We've started the primary and one secondary
+        primary = ha_tools.get_primary()
+        secondary = ha_tools.get_secondaries()[0]
+        self.assertEqual(
+            one(c_find_one.secondaries), _partition_node(secondary))
+
+        ha_tools.stepdown_primary()
+
+        # Make sure the stepdown completes
+        sleep(1)
+
+        # Trigger a refresh
+        self.assertRaises(AutoReconnect, c_find_one.test.test.find_one)
+
+        # Wait for the immediate refresh to complete - we're not waiting for
+        # the periodic refresh, which has been disabled
+        sleep(1)
+
+        # We've detected the stepdown
+        self.assertTrue(
+            not c_find_one.primary
+            or primary != _partition_node(c_find_one.primary))
+
+    def tearDown(self):
+        Monitor._refresh_interval = MONITOR_INTERVAL
         ha_tools.kill_all_members()
 
 
@@ -294,7 +425,7 @@ class TestReadWithFailover(unittest.TestCase):
         db.test.insert([{'foo': i} for i in xrange(10)], safe=True, w=w)
         self.assertEqual(10, db.test.count())
 
-        db.read_preference = ReadPreference.SECONDARY_PREFERRED
+        db.read_preference = SECONDARY_PREFERRED
         cursor = db.test.find().batch_size(5)
         cursor.next()
         self.assertEqual(5, cursor._Cursor__retrieved)
@@ -320,7 +451,7 @@ class TestReadPreference(unittest.TestCase):
             # other_secondary
             {'tags': {'dc': 'ny', 'name': 'other_secondary'}, 'priority': 0},
         ]
-        
+
         res = ha_tools.start_replica_set(members)
         self.seed, self.name = res
 
@@ -367,8 +498,6 @@ class TestReadPreference(unittest.TestCase):
         Member._host_to_ping_time.clear()
 
     def test_read_preference(self):
-        # This is long, but we put all the tests in one function to save time
-        # on setUp, which takes about 30 seconds to bring up a replica set.
         # We pass through four states:
         #
         #       1. A primary and two secondaries
@@ -392,19 +521,13 @@ class TestReadPreference(unittest.TestCase):
             host, port = node
             return '%s:%s' % (host, port)
 
-        # To make the code terser, copy modes and hosts into local scope
-        PRIMARY = ReadPreference.PRIMARY
-        PRIMARY_PREFERRED = ReadPreference.PRIMARY_PREFERRED
-        SECONDARY = ReadPreference.SECONDARY
-        SECONDARY_PREFERRED = ReadPreference.SECONDARY_PREFERRED
-        NEAREST = ReadPreference.NEAREST
-        
+        # To make the code terser, copy hosts into local scope
         primary = self.primary
         secondary = self.secondary
         other_secondary = self.other_secondary
 
         bad_tag = {'bad': 'tag'}
-                
+
         # 1. THREE MEMBERS UP -------------------------------------------------
         #       PRIMARY
         assertReadFrom(primary, PRIMARY)
@@ -521,7 +644,7 @@ class TestReadPreference(unittest.TestCase):
         self.clear_ping_times()
 
         assertReadFromAll([secondary, other_secondary], NEAREST)
-        
+
         # 3. PRIMARY UP, ONE SECONDARY DOWN -----------------------------------
         ha_tools.restart_members([killed])
 
@@ -539,7 +662,7 @@ class TestReadPreference(unittest.TestCase):
         ).admin.command('ismaster')['ismaster'])
 
         sleep(2 * MONITOR_INTERVAL)
-        
+
         #       PRIMARY
         assertReadFrom(primary, PRIMARY)
 
@@ -622,11 +745,7 @@ class TestReplicaSetAuth(unittest.TestCase):
                                       use_greenlets=use_greenlets)
 
         # Add an admin user to enable auth
-        try:
-            self.c.admin.add_user('admin', 'adminpass')
-        except:
-            # SERVER-4225
-            pass
+        self.c.admin.add_user('admin', 'adminpass')
         self.c.admin.authenticate('admin', 'adminpass')
 
         self.db = self.c.pymongo_ha_auth
@@ -649,13 +768,52 @@ class TestReplicaSetAuth(unittest.TestCase):
         # Make sure we can still authenticate
         self.assertTrue(self.db.authenticate('user', 'userpass'))
         # And still query.
-        self.db.read_preference = ReadPreference.PRIMARY_PREFERRED
+        self.db.read_preference = PRIMARY_PREFERRED
         self.assertEqual('bar', self.db.foo.find_one()['foo'])
 
     def tearDown(self):
         self.c.close()
         ha_tools.kill_all_members()
 
+
+class TestAlive(unittest.TestCase):
+    def setUp(self):
+        members = [{}, {}]
+        self.seed, self.name = ha_tools.start_replica_set(members)
+
+    def test_alive(self):
+        primary = ha_tools.get_primary()
+        secondary = ha_tools.get_random_secondary()
+        primary_cx = Connection(primary, use_greenlets=use_greenlets)
+        secondary_cx = Connection(secondary, use_greenlets=use_greenlets)
+        rsc = ReplicaSetConnection(
+            self.seed, replicaSet=self.name, use_greenlets=use_greenlets)
+
+        try:
+            self.assertTrue(primary_cx.alive())
+            self.assertTrue(secondary_cx.alive())
+            self.assertTrue(rsc.alive())
+    
+            ha_tools.kill_primary()
+            time.sleep(0.5)
+
+            self.assertFalse(primary_cx.alive())
+            self.assertTrue(secondary_cx.alive())
+            self.assertFalse(rsc.alive())
+            
+            ha_tools.kill_members([secondary], 2)
+            time.sleep(0.5)
+
+            self.assertFalse(primary_cx.alive())
+            self.assertFalse(secondary_cx.alive())
+            self.assertFalse(rsc.alive())
+        finally:
+            rsc.close()
+
+    def tearDown(self):
+        ha_tools.kill_all_members()
+        
+        
 class TestMongosHighAvailability(unittest.TestCase):
     def setUp(self):
         seed_list = ha_tools.create_sharded_cluster()
@@ -696,6 +854,62 @@ class TestMongosHighAvailability(unittest.TestCase):
 
     def tearDown(self):
         self.conn.drop_database(self.dbname)
+        ha_tools.kill_all_members()
+
+
+class TestReplicaSetRequest(unittest.TestCase):
+    def setUp(self):
+        members = [{}, {}, {'arbiterOnly': True}]
+        res = ha_tools.start_replica_set(members)
+        self.c = ReplicaSetConnection(res[0], replicaSet=res[1],
+                                      use_greenlets=use_greenlets)
+
+    def test_request_during_failover(self):
+        primary = _partition_node(ha_tools.get_primary())
+        secondary = _partition_node(ha_tools.get_random_secondary())
+
+        self.assertTrue(self.c.auto_start_request)
+        self.assertTrue(self.c.in_request())
+
+        primary_pool = self.c._MongoReplicaSetClient__members[primary].pool
+        secondary_pool = self.c._MongoReplicaSetClient__members[secondary].pool
+
+        # Trigger start_request on primary pool
+        utils.assertReadFrom(self, self.c, primary, PRIMARY)
+        self.assertTrue(primary_pool.in_request())
+
+        # Fail over
+        ha_tools.kill_primary()
+        patience_seconds = 60
+        for _ in range(patience_seconds):
+            sleep(1)
+            try:
+                if ha_tools.ha_tools_debug:
+                    print 'Waiting for failover'
+                if ha_tools.get_primary():
+                    # We have a new primary
+                    break
+            except ConnectionFailure:
+                pass
+        else:
+            self.fail("Problem with test: No new primary after %s seconds"
+                % patience_seconds)
+
+        try:
+            # Trigger start_request on secondary_pool, which is becoming new
+            # primary
+            self.c.test.test.find_one()
+        except AutoReconnect:
+            # We've noticed the failover now
+            pass
+
+        # The old secondary is now primary
+        utils.assertReadFrom(self, self.c, secondary, PRIMARY)
+        self.assertTrue(self.c.in_request())
+        self.assertTrue(secondary_pool.in_request())
+
+    def tearDown(self):
+        self.c.close()
         ha_tools.kill_all_members()
 
 

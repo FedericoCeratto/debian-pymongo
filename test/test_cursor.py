@@ -13,24 +13,25 @@
 # limitations under the License.
 
 """Test the cursor module."""
-import unittest
-import random
-import warnings
-import sys
+import copy
 import itertools
+import random
+import re
+import sys
+import unittest
 sys.path[0:0] = [""]
 
 from nose.plugins.skip import SkipTest
 
 from bson.code import Code
+from bson.son import SON
 from pymongo import (ASCENDING,
                      DESCENDING)
-from pymongo.cursor import Cursor
 from pymongo.database import Database
 from pymongo.errors import (InvalidOperation,
                             OperationFailure)
-from test.test_connection import get_connection
 from test import version
+from test.test_connection import get_connection
 
 
 class TestCursor(unittest.TestCase):
@@ -271,7 +272,6 @@ class TestCursor(unittest.TestCase):
         self.assertRaises(TypeError, db.test.find().sort, [], ASCENDING)
         self.assertRaises(TypeError, db.test.find().sort,
                           [("hello", DESCENDING)], DESCENDING)
-        self.assertRaises(TypeError, db.test.find().sort, "hello", "world")
 
         db.test.drop()
 
@@ -465,7 +465,8 @@ class TestCursor(unittest.TestCase):
         self.assertEqual(type(MyClass()), type(cursor[0]))
 
         # Just test attributes
-        cursor = self.db.test.find(skip=1,
+        cursor = self.db.test.find({"x": re.compile("^hello.*")},
+                                   skip=1,
                                    timeout=False,
                                    snapshot=True,
                                    tailable=True,
@@ -473,7 +474,8 @@ class TestCursor(unittest.TestCase):
                                    slave_okay=True,
                                    await_data=True,
                                    partial=True,
-                                   manipulate=False).limit(2)
+                                   manipulate=False,
+                                   fields={'_id': False}).limit(2)
         cursor.add_option(64)
 
         cursor2 = cursor.clone()
@@ -493,6 +495,39 @@ class TestCursor(unittest.TestCase):
                          cursor2._Cursor__manipulate)
         self.assertEqual(cursor._Cursor__query_flags,
                          cursor2._Cursor__query_flags)
+
+        # Shallow copies can so can mutate
+        cursor2 = copy.copy(cursor)
+        cursor2._Cursor__fields['cursor2'] = False
+        self.assertTrue('cursor2' in cursor._Cursor__fields)
+
+        # Deepcopies and shouldn't mutate
+        cursor3 = copy.deepcopy(cursor)
+        cursor3._Cursor__fields['cursor3'] = False
+        self.assertFalse('cursor3' in cursor._Cursor__fields)
+
+        cursor4 = cursor.clone()
+        cursor4._Cursor__fields['cursor4'] = False
+        self.assertFalse('cursor4' in cursor._Cursor__fields)
+
+        # Test memo when deepcopying queries
+        query = {"hello": "world"}
+        query["reflexive"] = query
+        cursor = self.db.test.find(query)
+
+        cursor2 = copy.deepcopy(cursor)
+
+        self.assertNotEqual(id(cursor._Cursor__spec),
+                            id(cursor2._Cursor__spec))
+        self.assertEqual(id(cursor2._Cursor__spec['reflexive']),
+                         id(cursor2._Cursor__spec))
+        self.assertEqual(len(cursor2._Cursor__spec), 2)
+
+        # Ensure hints are cloned as the correct type
+        cursor = self.db.test.find().hint([('z', 1), ("a", 1)])
+        cursor2 = copy.deepcopy(cursor)
+        self.assertTrue(isinstance(cursor2._Cursor__hint, SON))
+        self.assertEqual(cursor._Cursor__hint, cursor2._Cursor__hint)
 
     def test_add_remove_option(self):
         cursor = self.db.test.find()
@@ -681,21 +716,21 @@ class TestCursor(unittest.TestCase):
 
         cursor = db.test.find(tailable=True)
 
-        db.test.insert({"x": 1})
+        db.test.insert({"x": 1}, safe=True)
         count = 0
         for doc in cursor:
             count += 1
             self.assertEqual(1, doc["x"])
         self.assertEqual(1, count)
 
-        db.test.insert({"x": 2})
+        db.test.insert({"x": 2}, safe=True)
         count = 0
         for doc in cursor:
             count += 1
             self.assertEqual(2, doc["x"])
         self.assertEqual(1, count)
 
-        db.test.insert({"x": 3})
+        db.test.insert({"x": 3}, safe=True)
         count = 0
         for doc in cursor:
             count += 1
