@@ -37,7 +37,7 @@ Provides: ${python3:Provides}
 Description: Python3 interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
  document-oriented data store. Pymongo provides an interface
- to easily access it from Python.
+ to easily access it from Python3.
  Consider installing the python-pymongo-ext C extension to improve performance.
 
 Package: python-pymongo-ext
@@ -80,7 +80,7 @@ Depends: ${python3:Depends}, ${misc:Depends}
 Provides: ${python3:Provides}
 Description: Python3 implementation of GridFS for MongoDB
  GridFS is a storage specification for large objects in MongoDB.
- The Python gridfs module is an implementation based
+ The Python3 gridfs module is an implementation based
  on the pymongo module. It provides a file-like interface.
 
 Package: python-bson
@@ -98,7 +98,7 @@ Depends: ${python3:Depends}, ${misc:Depends}, ${shlibs:Depends}
 Recommends: python-bson-ext [any-i386 any-ia64 any-amd64]
 Provides: ${python3:Provides}
 Description: Python3 implementation of BSON for MongoDB
- BSON Python module contains all of the Binary JSON encoding and decoding
+ BSON Python3 module contains all of the Binary JSON encoding and decoding
  logic for MongoDB.
 
 Package: python-bson-ext
