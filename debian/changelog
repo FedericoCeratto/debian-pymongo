@@ -1,9 +1,9 @@
-pymongo (2.4.2-1) UNRELEASED; urgency=low
+pymongo (2.4.2-1) unstable; urgency=low
 
   * New upstream release. (Closes: #703447)
   * Python3 support added. (Closes: #680376, #680379)
 
- -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 19 Mar 2013 22:19:25 +0000
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Wed, 20 Mar 2013 00:38:10 +0000
 
 pymongo (2.2-2) unstable; urgency=low
 
