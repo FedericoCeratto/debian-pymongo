@@ -17,8 +17,15 @@
 import warnings
 from pymongo import read_preferences
 
+from pymongo.auth import MECHANISMS
 from pymongo.read_preferences import ReadPreference
 from pymongo.errors import ConfigurationError
+
+HAS_SSL = True
+try:
+    import ssl
+except ImportError:
+    HAS_SSL = False
 
 
 def raise_config_error(key, dummy):
@@ -60,6 +67,33 @@ def validate_positive_integer(option, value):
         raise ConfigurationError("The value of %s must be "
                                  "a positive integer" % (option,))
     return val
+
+
+def validate_readable(option, value):
+    """Validates that 'value' is file-like and readable.
+    """
+    # First make sure its a string py3.3 open(True, 'r') succeeds
+    # Used in ssl cert checking due to poor ssl module error reporting
+    value = validate_basestring(option, value)
+    open(value, 'r').close()
+    return value
+
+
+def validate_cert_reqs(option, value):
+    """Validate the cert reqs are valid. It must be None or one of the three
+    values ``ssl.CERT_NONE``, ``ssl.CERT_OPTIONAL`` or ``ssl.CERT_REQUIRED``"""
+    if value is None:
+        return value
+    if HAS_SSL:
+        if value in (ssl.CERT_NONE, ssl.CERT_OPTIONAL, ssl.CERT_REQUIRED):
+            return value
+        raise ConfigurationError("The value of %s must be one of: "
+                                 "`ssl.CERT_NONE`, `ssl.CERT_OPTIONAL` or "
+                                 "`ssl.CERT_REQUIRED" % (option,))
+    else:
+        raise ConfigurationError("The value of %s is set but can't be "
+                                 "validated. The ssl module is not available"
+                                 % (option,))
 
 
 def validate_positive_integer_or_none(option, value):
@@ -154,6 +188,15 @@ def validate_tag_sets(dummy, value):
     return value
 
 
+def validate_auth_mechanism(option, value):
+    """Validate the authMechanism URI option.
+    """
+    if value not in MECHANISMS:
+        raise ConfigurationError("%s must be in "
+                                 "%s" % (option, MECHANISMS))
+    return value
+
+
 # jounal is an alias for j,
 # wtimeoutms is an alias for wtimeout
 VALIDATORS = {
@@ -170,6 +213,10 @@ VALIDATORS = {
     'connecttimeoutms': validate_timeout_or_none,
     'sockettimeoutms': validate_timeout_or_none,
     'ssl': validate_boolean,
+    'ssl_keyfile': validate_readable,
+    'ssl_certfile': validate_readable,
+    'ssl_cert_reqs': validate_cert_reqs,
+    'ssl_ca_certs': validate_readable,
     'readpreference': validate_read_preference,
     'read_preference': validate_read_preference,
     'tag_sets': validate_tag_sets,
@@ -177,6 +224,8 @@ VALIDATORS = {
     'secondary_acceptable_latency_ms': validate_positive_float,
     'auto_start_request': validate_boolean,
     'use_greenlets': validate_boolean,
+    'authmechanism': validate_auth_mechanism,
+    'authsource': validate_basestring,
 }
 
 
@@ -339,6 +388,14 @@ class BaseObject(object):
 
         .. note:: Accessing :attr:`write_concern` returns its value
            (a subclass of :class:`dict`), not a copy.
+
+        .. warning:: If you are using :class:`~pymongo.connection.Connection`
+           or :class:`~pymongo.replica_set_connection.ReplicaSetConnection`
+           make sure you explicitly set ``w`` to 1 (or a greater value) or
+           :attr:`safe` to ``True``. Unlike calling
+           :meth:`set_lasterror_options`, setting an option in
+           :attr:`write_concern` does not implicitly set :attr:`safe`
+           to ``True``.
         """
         # To support dict style access we have to return the actual
         # WriteConcern here, not a copy.
@@ -386,6 +443,12 @@ class BaseObject(object):
         See :class:`~pymongo.read_preferences.ReadPreference`.
 
         .. versionadded:: 2.3
+
+        .. note:: ``secondary_acceptable_latency_ms`` is ignored when talking to a
+          replica set *through* a mongos. The equivalent is the localThreshold_ command
+          line option.
+
+        .. _localThreshold: http://docs.mongodb.org/manual/reference/mongos/#cmdoption-mongos--localThreshold
         """
         return self.__secondary_acceptable_latency_ms
 
@@ -548,7 +611,9 @@ class BaseObject(object):
 
         # Fall back to collection level defaults.
         # w=0 takes precedence over self.safe = True
-        if self.safe and self.__write_concern.get('w') != 0:
+        if self.__write_concern.get('w') == 0:
+            return False, {}
+        elif self.safe or self.__write_concern.get('w', 0) != 0:
             return True, pop1(self.__write_concern.copy())
 
         return False, {}
