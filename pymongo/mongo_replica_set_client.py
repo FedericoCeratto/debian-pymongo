@@ -31,6 +31,7 @@ attribute-style access:
   Database(MongoReplicaSetClient([u'...', u'...']), u'test_database')
 """
 
+import atexit
 import datetime
 import socket
 import struct
@@ -38,11 +39,10 @@ import threading
 import time
 import warnings
 import weakref
-import atexit
 
 from bson.py3compat import b
-from bson.son import SON
-from pymongo import (common,
+from pymongo import (auth,
+                     common,
                      database,
                      helpers,
                      message,
@@ -57,6 +57,9 @@ from pymongo.errors import (AutoReconnect,
                             DuplicateKeyError,
                             InvalidDocument,
                             OperationFailure)
+
+if common.HAS_SSL:
+    import ssl
 
 EMPTY = b("")
 MAX_BSON_SIZE = 4 * 1024 * 1024
@@ -274,7 +277,7 @@ class MongoReplicaSetClient(common.BaseObject):
                  document_class=dict, tz_aware=False, **kwargs):
         """Create a new connection to a MongoDB replica set.
 
-        The resultant connection object has connection-pooling built
+        The resultant client object has connection-pooling built
         in. It also performs auto-reconnection when necessary. If an
         operation fails because of a connection error,
         :class:`~pymongo.errors.ConnectionFailure` is raised. If
@@ -307,7 +310,7 @@ class MongoReplicaSetClient(common.BaseObject):
           - `max_pool_size` (optional): The maximum number of idle connections
             to keep open in each pool for future use
           - `document_class` (optional): default class to use for
-            documents returned from queries on this connection
+            documents returned from queries on this client
           - `tz_aware` (optional): if ``True``,
             :class:`~datetime.datetime` instances returned as values
             in a document by this :class:`MongoReplicaSetClient` will be timezone
@@ -317,14 +320,39 @@ class MongoReplicaSetClient(common.BaseObject):
             this replica set. Can be passed as a keyword argument or as a
             MongoDB URI option.
 
-          **Other optional parameters can be passed as keyword arguments:**
+          | **Other optional parameters can be passed as keyword arguments:**
+
+          - `host`: For compatibility with :class:`~mongo_client.MongoClient`.
+            If both `host` and `hosts_or_uri` are specified `host` takes
+            precedence.
+          - `port`: For compatibility with :class:`~mongo_client.MongoClient`.
+            The default port number to use for hosts.
+          - `socketTimeoutMS`: (integer) How long (in milliseconds) a send or
+            receive on a socket can take before timing out.
+          - `connectTimeoutMS`: (integer) How long (in milliseconds) a
+            connection can take to be opened before timing out.
+          - `auto_start_request`: If ``True``, each thread that accesses
+            this :class:`MongoReplicaSetClient` has a socket allocated to it
+            for the thread's lifetime, for each member of the set. For
+            :class:`~pymongo.read_preferences.ReadPreference` PRIMARY,
+            auto_start_request=True ensures consistent reads, even if you read
+            after an unacknowledged write. For read preferences other than
+            PRIMARY, there are no consistency guarantees. Default to ``False``.
+          - `use_greenlets`: If ``True``, use a background Greenlet instead of
+            a background thread to monitor state of replica set. Additionally,
+            :meth:`start_request()` assigns a greenlet-local, rather than
+            thread-local, socket.
+            `use_greenlets` with :class:`MongoReplicaSetClient` requires
+            `Gevent <http://gevent.org/>`_ to be installed.
+
+          | **Write Concern options:**
 
           - `w`: (integer or string) Write operations will block until they have
             been replicated to the specified number or tagged set of servers.
             `w=<int>` always includes the replica set primary (e.g. w=3 means
             write to the primary and wait until replicated to **two**
-            secondaries). **Passing w=0 disables write acknowledgement and all
-            other write concern options.**
+            secondaries). Passing w=0 **disables write acknowledgement** and all
+            other write concern options.
           - `wtimeout`: (integer) Used in conjunction with `w`. Specify a value
             in milliseconds to control how long to wait for write propagation
             to complete. If replication does not complete in the given
@@ -334,13 +362,12 @@ class MongoReplicaSetClient(common.BaseObject):
           - `fsync`: If ``True`` force the database to fsync all files before
             returning. When used with `j` the server awaits the next group
             commit before returning.
-          - `socketTimeoutMS`: (integer) How long (in milliseconds) a send or
-            receive on a socket can take before timing out.
-          - `connectTimeoutMS`: (integer) How long (in milliseconds) a
-            connection can take to be opened before timing out.
-          - `ssl`: If ``True``, create the connection to the servers using SSL.
-          - `read_preference`: The read preference for this connection.
+
+          | **Read preference options:**
+
+          - `read_preference`: The read preference for this client.
             See :class:`~pymongo.read_preferences.ReadPreference` for available
+            options.
           - `tag_sets`: Read from replica-set members with these tags.
             To specify a priority-order for tag sets, provide a list of
             tag sets: ``[{'dc': 'ny'}, {'dc': 'la'}, {}]``. A final, empty tag
@@ -351,26 +378,35 @@ class MongoReplicaSetClient(common.BaseObject):
           - `secondary_acceptable_latency_ms`: (integer) Any replica-set member
             whose ping time is within secondary_acceptable_latency_ms of the
             nearest member may accept reads. Default 15 milliseconds.
-          - `auto_start_request`: If ``True`, each thread that accesses
-            this :class:`MongoReplicaSetClient` has a socket allocated to it
-            for the thread's lifetime, for each member of the set. For
-            :class:`~pymongo.read_preferences.ReadPreference` PRIMARY,
-            auto_start_request=True ensures consistent reads, even if you read
-            after an unacknowledged write. For read preferences other than PRIMARY,
-            there are no consistency guarantees. Default to ``False``.
-          - `use_greenlets`: If ``True``, use a background Greenlet instead of
-            a background thread to monitor state of replica set. Additionally,
-            :meth:`start_request()` assigns a greenlet-local, rather than
-            thread-local, socket.
-            `use_greenlets` with :class:`MongoReplicaSetClient` requires
-            `Gevent <http://gevent.org/>`_ to be installed.
-          - `host`: For compatibility with :class:`~mongo_client.MongoClient`.
-            If both `host` and `hosts_or_uri` are specified `host` takes
-            precedence.
-          - `port`: For compatibility with :class:`~mongo_client.MongoClient`.
-            The default port number to use for hosts.
+            **Ignored by mongos** and must be configured on the command line.
+            See the localThreshold_ option for more information.
 
+          | **SSL configuration:**
+
+          - `ssl`: If ``True``, create the connection to the servers using SSL.
+          - `ssl_keyfile`: The private keyfile used to identify the local
+            connection against mongod.  If included with the ``certfile` then
+            only the ``ssl_certfile`` is needed.  Implies ``ssl=True``.
+          - `ssl_certfile`: The certificate file used to identify the local
+            connection against mongod. Implies ``ssl=True``.
+          - `ssl_cert_reqs`: Specifies whether a certificate is required from
+            the other side of the connection, and whether it will be validated
+            if provided. It must be one of the three values ``ssl.CERT_NONE``
+            (certificates ignored), ``ssl.CERT_OPTIONAL``
+            (not required, but validated if provided), or ``ssl.CERT_REQUIRED``
+            (required and validated). If the value of this parameter is not
+            ``ssl.CERT_NONE``, then the ``ssl_ca_certs`` parameter must point
+            to a file of CA certificates. Implies ``ssl=True``.
+          - `ssl_ca_certs`: The ca_certs file contains a set of concatenated
+            "certification authority" certificates, which are used to validate
+            certificates passed from the other end of the connection.
+            Implies ``ssl=True``.
+
+        .. versionchanged:: 2.5
+           Added addtional ssl options
         .. versionadded:: 2.4
+
+        .. _localThreshold: http://docs.mongodb.org/manual/reference/mongos/#cmdoption-mongos--localThreshold
         """
         self.__opts = {}
         self.__seeds = set()
@@ -437,11 +473,32 @@ class MongoReplicaSetClient(common.BaseObject):
             raise ConfigurationError("the replicaSet "
                                      "keyword parameter is required.")
 
-
         self.__net_timeout = self.__opts.get('sockettimeoutms')
         self.__conn_timeout = self.__opts.get('connecttimeoutms')
-        self.__use_ssl = self.__opts.get('ssl', False)
-        if self.__use_ssl and not pool.have_ssl:
+        self.__use_ssl = self.__opts.get('ssl', None)
+        self.__ssl_keyfile = self.__opts.get('ssl_keyfile', None)
+        self.__ssl_certfile = self.__opts.get('ssl_certfile', None)
+        self.__ssl_cert_reqs = self.__opts.get('ssl_cert_reqs', None)
+        self.__ssl_ca_certs = self.__opts.get('ssl_ca_certs', None)
+
+        ssl_kwarg_keys = [k for k in kwargs.keys() if k.startswith('ssl_')]
+        if self.__use_ssl == False and ssl_kwarg_keys:
+            raise ConfigurationError("ssl has not been enabled but the "
+                                     "following ssl parameters have been set: "
+                                     "%s. Please set `ssl=True` or remove."
+                                     % ', '.join(ssl_kwarg_keys))
+
+        if self.__ssl_cert_reqs and not self.__ssl_ca_certs:
+                raise ConfigurationError("If `ssl_cert_reqs` is not "
+                                         "`ssl.CERT_NONE` then you must "
+                                         "include `ssl_ca_certs` to be able "
+                                         "to validate the server.")
+
+        if ssl_kwarg_keys and self.__use_ssl is None:
+            # ssl options imply ssl = True
+            self.__use_ssl = True
+
+        if self.__use_ssl and not common.HAS_SSL:
             raise ConfigurationError("The ssl module is not available. If you "
                                      "are using a python version previous to "
                                      "2.6 you must install the ssl package "
@@ -458,14 +515,23 @@ class MongoReplicaSetClient(common.BaseObject):
             # ConnectionFailure makes more sense here than AutoReconnect
             raise ConnectionFailure(str(e))
 
+        db_name = options.get('authsource', db_name)
         if db_name and username is None:
-            warnings.warn("database name in URI is being ignored. If you wish "
-                          "to authenticate to %s, you must provide a username "
-                          "and password." % (db_name,))
+            warnings.warn("database name or authSource in URI is being "
+                          "ignored. If you wish to authenticate to %s, you "
+                          "must provide a username and password." % (db_name,))
         if username:
-            db_name = db_name or 'admin'
-            if not self[db_name].authenticate(username, password):
-                raise ConfigurationError("authentication failed")
+            mechanism = options.get('authmechanism', 'MONGODB-CR')
+            if mechanism == 'GSSAPI':
+                source = '$external'
+            else:
+                source = db_name or 'admin'
+            credentials = (source, unicode(username),
+                           unicode(password), mechanism)
+            try:
+                self._cache_credentials(source, credentials)
+            except OperationFailure, exc:
+                raise ConfigurationError(str(exc))
 
         # Start the monitor after we know the configuration is correct.
         if monitor_class:
@@ -531,45 +597,57 @@ class MongoReplicaSetClient(common.BaseObject):
         if index_name in self.__index_cache[database_name][collection_name]:
             del self.__index_cache[database_name][collection_name][index_name]
 
-    def _cache_credentials(self, db_name, username, password):
+    def _cache_credentials(self, source, credentials):
         """Add credentials to the database authentication cache
         for automatic login when a socket is created.
 
         If credentials are already cached for `db_name` they
         will be replaced.
         """
-        self.__auth_credentials[db_name] = (username, password)
+        if source in self.__auth_credentials:
+            # Nothing to do if we already have these credentials.
+            if credentials == self.__auth_credentials[source]:
+                return
+            raise OperationFailure('Another user is already authenticated '
+                                   'to this database. You must logout first.')
 
-    def _purge_credentials(self, db_name=None):
+        # Try to authenticate even during failover.
+        members = self.__members.copy().values()
+        member = select_member(members, ReadPreference.PRIMARY_PREFERRED)
+        sock_info = self.__socket(member)
+        try:
+            # Since __check_auth was called in __socket
+            # there is no need to call it here.
+            auth.authenticate(credentials, sock_info, self.__simple_command)
+            sock_info.authset.add(credentials)
+        finally:
+            member.pool.maybe_return_socket(sock_info)
+
+        self.__auth_credentials[source] = credentials
+
+    def _purge_credentials(self, source):
         """Purge credentials from the database authentication cache.
-
-        If `db_name` is None purge credentials for all databases.
         """
-        if db_name is None:
-            self.__auth_credentials.clear()
-        elif db_name in self.__auth_credentials:
-            del self.__auth_credentials[db_name]
+        if source in self.__auth_credentials:
+            del self.__auth_credentials[source]
 
     def __check_auth(self, sock_info):
         """Authenticate using cached database credentials.
         """
-        authset = sock_info.authset
-        names = set(self.__auth_credentials.iterkeys())
+        if self.__auth_credentials or sock_info.authset:
+            cached = set(self.__auth_credentials.itervalues())
 
-        # Logout from any databases no longer listed in the credentials cache.
-        for dbname in authset - names:
-            try:
-                self.__simple_command(sock_info, dbname, {'logout': 1})
-            # TODO: We used this socket to logout. Fix logout so we don't
-            # have to catch this.
-            except OperationFailure:
-                pass
-            authset.discard(dbname)
+            authset = sock_info.authset.copy()
 
-        for db_name in names - authset:
-            user, pwd = self.__auth_credentials[db_name]
-            self.__auth(sock_info, db_name, user, pwd)
-            authset.add(db_name)
+            # Logout any credentials that no longer exist in the cache.
+            for credentials in authset - cached:
+                self.__simple_command(sock_info, credentials[0], {'logout': 1})
+                sock_info.authset.discard(credentials)
+
+            for credentials in cached - authset:
+                auth.authenticate(credentials,
+                                  sock_info, self.__simple_command)
+                sock_info.authset.add(credentials)
 
     @property
     def seeds(self):
@@ -580,7 +658,7 @@ class MongoReplicaSetClient(common.BaseObject):
     @property
     def hosts(self):
         """All active and passive (priority 0) replica set
-        members known to this connection. This does not include
+        members known to this client. This does not include
         hidden or slaveDelay members, or arbiters.
         """
         return self.__hosts
@@ -595,7 +673,7 @@ class MongoReplicaSetClient(common.BaseObject):
 
     @property
     def secondaries(self):
-        """The secondary members known to this connection.
+        """The secondary members known to this client.
         """
         return set([
             host for host, member in self.__members.items()
@@ -603,7 +681,7 @@ class MongoReplicaSetClient(common.BaseObject):
 
     @property
     def arbiters(self):
-        """The arbiters known to this connection.
+        """The arbiters known to this client.
         """
         return self.__arbiters
 
@@ -647,12 +725,12 @@ class MongoReplicaSetClient(common.BaseObject):
 
     document_class = property(get_document_class, set_document_class,
                               doc="""Default class to use for documents
-                              returned on this connection.
+                              returned from this client.
                               """)
 
     @property
     def tz_aware(self):
-        """Does this connection return timezone-aware datetimes?
+        """Does this client return timezone-aware datetimes?
         """
         return self.__tz_aware
 
@@ -691,26 +769,21 @@ class MongoReplicaSetClient(common.BaseObject):
         helpers._check_command_response(response, None, msg)
         return response, end - start
 
-    def __auth(self, sock_info, dbname, user, passwd):
-        """Authenticate socket against database `dbname`.
-        """
-        # Get a nonce
-        response, _ = self.__simple_command(sock_info, dbname, {'getnonce': 1})
-        nonce = response['nonce']
-        key = helpers._auth_key(nonce, user, passwd)
-
-        # Actually authenticate
-        query = SON([('authenticate', 1),
-                     ('user', user), ('nonce', nonce), ('key', key)])
-        self.__simple_command(sock_info, dbname, query)
-
     def __is_master(self, host):
         """Directly call ismaster.
            Returns (response, connection_pool, ping_time in seconds).
         """
         connection_pool = self.pool_class(
-            host, self.__max_pool_size, self.__net_timeout, self.__conn_timeout,
-            self.__use_ssl, use_greenlets=self.__use_greenlets)
+            host,
+            self.__max_pool_size,
+            self.__net_timeout,
+            self.__conn_timeout,
+            self.__use_ssl,
+            use_greenlets=self.__use_greenlets,
+            ssl_keyfile=self.__ssl_keyfile,
+            ssl_certfile=self.__ssl_certfile,
+            ssl_cert_reqs=self.__ssl_cert_reqs,
+            ssl_ca_certs=self.__ssl_ca_certs)
 
         if self.in_request():
             connection_pool.start_request()
@@ -765,18 +838,24 @@ class MongoReplicaSetClient(common.BaseObject):
     def __schedule_refresh(self):
         self.__monitor.schedule_refresh()
 
-    def __pin_host(self, host):
+    def __pin_host(self, host, mode, tag_sets, latency):
         # After first successful read in a request, continue reading from same
         # member until read preferences change, host goes down, or
         # end_request(). This offers a small assurance that reads won't jump
         # around in time.
         self.__threadlocal.host = host
+        self.__threadlocal.read_preference = (mode, tag_sets, latency)
+
+    def __keep_pinned_host(self, mode, tag_sets, latency):
+        # If read preferences have changed, return False
+        return getattr(self.__threadlocal, 'read_preference', None) == (
+            mode, tag_sets, latency)
 
     def __pinned_host(self):
         return getattr(self.__threadlocal, 'host', None)
 
     def __unpin_host(self):
-        self.__threadlocal.host = None
+        self.__threadlocal.host = self.__threadlocal.read_preference = None
 
     def __reset_pinned_hosts(self):
         if self.__use_greenlets:
@@ -905,8 +984,11 @@ class MongoReplicaSetClient(common.BaseObject):
 
         sock_info = member.pool.get_socket()
 
-        if self.__auth_credentials:
+        try:
             self.__check_auth(sock_info)
+        except OperationFailure:
+            member.pool.maybe_return_socket(sock_info)
+            raise
         return sock_info
 
     def disconnect(self):
@@ -920,7 +1002,7 @@ class MongoReplicaSetClient(common.BaseObject):
         self.__schedule_refresh()
 
     def close(self):
-        """Close this connection instance.
+        """Close this client instance.
 
         This method first terminates the replica set monitor, then disconnects
         from all members of the replica set. Once called this instance
@@ -951,7 +1033,7 @@ class MongoReplicaSetClient(common.BaseObject):
 
         A more certain way to determine primary availability is to ping it::
 
-            connection.admin.command('ping')
+            client.admin.command('ping')
 
         .. _select: http://docs.python.org/2/library/select.html#select.select
         """
@@ -1117,7 +1199,8 @@ class MongoReplicaSetClient(common.BaseObject):
             member.pool.discard_socket(sock_info)
             raise AutoReconnect("%s:%d: %s" % (host, port, str(why)))
         except:
-            sock_info.close()
+            if sock_info:
+                sock_info.close()
             raise
 
     def __try_read(self, member, msg, **kwargs):
@@ -1154,7 +1237,7 @@ class MongoReplicaSetClient(common.BaseObject):
             mode = ReadPreference.PRIMARY
             tag_sets = [{}]
 
-        secondary_acceptable_latency_ms = kwargs.get(
+        latency = kwargs.get(
             'secondary_acceptable_latency_ms',
             self.secondary_acceptable_latency_ms)
 
@@ -1172,12 +1255,18 @@ class MongoReplicaSetClient(common.BaseObject):
                 self.disconnect()
             raise
 
+        # To provide some monotonic consistency, we use the same member as
+        # long as this thread is in a request and all reads use the same
+        # mode, tags, and latency. The member gets unpinned if pref changes,
+        # if member changes state, if we detect a failover and call
+        # __reset_pinned_hosts(), or if this thread calls end_request().
         errors = []
         pinned_member = self.__members.get(self.__pinned_host())
         if (pinned_member
             and pinned_member.matches_mode(mode)
             and pinned_member.matches_tag_sets(tag_sets)
             and pinned_member.up
+            and self.__keep_pinned_host(mode, tag_sets, latency)
         ):
             try:
                 return (
@@ -1200,7 +1289,7 @@ class MongoReplicaSetClient(common.BaseObject):
                 members=members,
                 mode=mode,
                 tag_sets=tag_sets,
-                latency=secondary_acceptable_latency_ms)
+                latency=latency)
 
             if not member:
                 # Ran out of members to try
@@ -1214,7 +1303,8 @@ class MongoReplicaSetClient(common.BaseObject):
                 # Success
                 if self.in_request():
                     # Keep reading from this member in this thread / greenlet
-                    self.__pin_host(member.host)
+                    # unless read preference changes
+                    self.__pin_host(member.host, mode, tag_sets, latency)
                 return member.host, response
             except AutoReconnect, why:
                 errors.append(str(why))
@@ -1247,10 +1337,10 @@ class MongoReplicaSetClient(common.BaseObject):
         "from __future__ import with_statement", :meth:`start_request` can be
         used as a context manager:
 
-        >>> connection = pymongo.MongoReplicaSetClient()
-        >>> db = connection.test
+        >>> client = pymongo.MongoReplicaSetClient()
+        >>> db = client.test
         >>> _id = db.test_collection.insert({})
-        >>> with connection.start_request():
+        >>> with client.start_request():
         ...     for i in range(100):
         ...         db.test_collection.update({'_id': _id}, {'$set': {'i':i}})
         ...
@@ -1339,7 +1429,7 @@ class MongoReplicaSetClient(common.BaseObject):
 
         Raises :class:`TypeError` if `cursor_id` is not an instance of
         ``(int, long)``. What closing the cursor actually means
-        depends on this connection's cursor manager.
+        depends on this client's cursor manager.
 
         :Parameters:
           - `cursor_id`: id of cursor to close
@@ -1430,7 +1520,7 @@ class MongoReplicaSetClient(common.BaseObject):
                                            fromhost=from_host)["nonce"]
                 command["username"] = username
                 command["nonce"] = nonce
-                command["key"] = helpers._auth_key(nonce, username, password)
+                command["key"] = auth._auth_key(nonce, username, password)
 
             return self.admin.command("copydb", **command)
         finally:

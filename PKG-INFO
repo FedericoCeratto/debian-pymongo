@@ -1,6 +1,6 @@
 Metadata-Version: 1.1
 Name: pymongo
-Version: 2.4.2
+Version: 2.5
 Summary: Python driver for MongoDB <http://www.mongodb.org>
 Home-page: http://github.com/mongodb/mongo-python-driver
 Author: Bernie Hackett
@@ -60,8 +60,8 @@ Description: =======
         Here's a basic example (for more see the *examples* section of the docs):
         
         >>> import pymongo
-        >>> connection = pymongo.MongoClient("localhost", 27017)
-        >>> db = connection.test
+        >>> client = pymongo.MongoClient("localhost", 27017)
+        >>> db = client.test
         >>> db.name
         u'test'
         >>> db.my_collection
