@@ -20,7 +20,7 @@ Package: python-pymongo
 Architecture: any
 Depends: python-bson (= ${binary:Version}), ${python:Depends}, ${misc:Depends}
 Recommends: python-gridfs (>= ${source:Version})
- , python-pymongo-ext [any-i386 any-ia64 any-amd64]
+ , python-pymongo-ext (= ${source:Version}) [any-i386 any-ia64 any-amd64]
 Provides: ${python:Provides}
 Description: Python interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
@@ -32,7 +32,7 @@ Package: python3-pymongo
 Architecture: any
 Depends: python3-bson (= ${binary:Version}), ${python3:Depends}, ${misc:Depends}
 Recommends: python3-gridfs (>= ${source:Version})
- , python-pymongo-ext [any-i386 any-ia64 any-amd64]
+ , python-pymongo-ext (= ${source:Version}) [any-i386 any-ia64 any-amd64]
 Provides: ${python3:Provides}
 Description: Python3 interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
