@@ -30,6 +30,7 @@ sys.path[0:0] = [""]
 
 from bson.binary import Binary, UUIDLegacy, OLD_UUID_SUBTYPE, UUID_SUBTYPE
 from bson.code import Code
+from bson.dbref import DBRef
 from bson.objectid import ObjectId
 from bson.py3compat import b
 from bson.son import SON
@@ -184,14 +185,14 @@ class TestCollection(unittest.TestCase):
         db.test.drop_index("goodbye_1")
         self.assertEqual("goodbye_1",
                          db.test.ensure_index("goodbye", cache_for=1))
-        time.sleep(1.1)
+        time.sleep(1.2)
         self.assertEqual("goodbye_1",
                          db.test.ensure_index("goodbye"))
 
         db.test.drop_index("goodbye_1")
         self.assertEqual("goodbye_1",
                          db.test.create_index("goodbye", cache_for=1))
-        time.sleep(1.1)
+        time.sleep(1.2)
         self.assertEqual("goodbye_1",
                          db.test.ensure_index("goodbye"))
         # Make sure the expiration time is updated.
@@ -416,8 +417,9 @@ class TestCollection(unittest.TestCase):
                 "coordinates": [[[40,5], [40,6], [41,6], [41,5], [40,5]]]}
         query = {"geo": {"$within": {"$geometry": poly}}}
 
-        self.assertEqual("S2Cursor",
-                         db.test.find(query).explain()['cursor'])
+        self.assertTrue(
+            db.test.find(query).explain()['cursor'].startswith('S2Cursor'))
+
         db.test.drop_indexes()
 
     def test_index_hashed(self):
@@ -1046,7 +1048,7 @@ class TestCollection(unittest.TestCase):
             None, db.test.update({"_id": id}, {"$inc": {"x": 1}}, w=0))
 
         if v19:
-            self.assertTrue(db.error()["err"].startswith("E11000"))
+            self.assertTrue("E11000" in db.error()["err"])
         elif v113minus:
             self.assertTrue(db.error()["err"].startswith("E11001"))
         else:
@@ -1674,6 +1676,31 @@ class TestCollection(unittest.TestCase):
         self.assertRaises(InvalidDocument, c.save, {"x": c})
         warnings.simplefilter("default")
 
+    def test_bad_dbref(self):
+        c = self.db.test
+        c.drop()
+
+        # Incomplete DBRefs.
+        self.assertRaises(
+            InvalidDocument,
+            c.insert, {'ref': {'$ref': 'collection'}})
+
+        self.assertRaises(
+            InvalidDocument,
+            c.insert, {'ref': {'$id': ObjectId()}})
+
+        ref_only = {'ref': {'$ref': 'collection'}}
+        id_only = {'ref': {'$id': ObjectId()}}
+
+        # Force insert of ref without $id.
+        c.insert(ref_only, check_keys=False)
+        self.assertEqual(DBRef('collection', id=None), c.find_one()['ref'])
+        c.drop()
+
+        # DBRef without $ref is decoded as normal subdocument.
+        c.insert(id_only, check_keys=False)
+        self.assertEqual(id_only, c.find_one())
+
     def test_as_class(self):
         c = self.db.test
         c.drop()
@@ -1699,6 +1726,14 @@ class TestCollection(unittest.TestCase):
         c.drop()
         c.insert({'_id': 1, 'i': 1})
 
+        # Test that we raise DuplicateKeyError when appropriate.
+        c.ensure_index('i', unique=True)
+        self.assertRaises(DuplicateKeyError,
+                          c.find_and_modify, query={'i': 1, 'j': 1},
+                          update={'$set': {'k': 1}}, upsert=True)
+        c.drop_indexes()
+
+        # Test correct findAndModify
         self.assertEqual({'_id': 1, 'i': 1},
                          c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}}))
         self.assertEqual({'_id': 1, 'i': 3},
