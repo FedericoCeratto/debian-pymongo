@@ -208,7 +208,7 @@ class MongoClient(common.BaseObject):
         .. mongodoc:: connections
 
         .. versionchanged:: 2.5
-           Added addtional ssl options
+           Added additional ssl options
         .. versionadded:: 2.4
         """
         if host is None:
@@ -326,7 +326,8 @@ class MongoClient(common.BaseObject):
         super(MongoClient, self).__init__(**options)
         if self.slave_okay:
             warnings.warn("slave_okay is deprecated. Please "
-                          "use read_preference instead.", DeprecationWarning)
+                          "use read_preference instead.", DeprecationWarning,
+                          stacklevel=2)
 
         if _connect:
             try:
@@ -349,7 +350,7 @@ class MongoClient(common.BaseObject):
             credentials = (source, unicode(username),
                            unicode(password), mechanism)
             try:
-                self._cache_credentials(source, credentials)
+                self._cache_credentials(source, credentials, _connect)
             except OperationFailure, exc:
                 raise ConfigurationError(str(exc))
 
@@ -406,9 +407,10 @@ class MongoClient(common.BaseObject):
         if index_name in self.__index_cache[database_name][collection_name]:
             del self.__index_cache[database_name][collection_name][index_name]
 
-    def _cache_credentials(self, source, credentials):
+    def _cache_credentials(self, source, credentials, connect=True):
         """Add credentials to the database authentication cache
-        for automatic login when a socket is created.
+        for automatic login when a socket is created. If `connect` is True,
+        verify the credentials on the server first.
         """
         if source in self.__auth_credentials:
             # Nothing to do if we already have these credentials.
@@ -417,14 +419,15 @@ class MongoClient(common.BaseObject):
             raise OperationFailure('Another user is already authenticated '
                                    'to this database. You must logout first.')
 
-        sock_info = self.__socket()
-        try:
-            # Since __check_auth was called in __socket
-            # there is no need to call it here.
-            auth.authenticate(credentials, sock_info, self.__simple_command)
-            sock_info.authset.add(credentials)
-        finally:
-            self.__pool.maybe_return_socket(sock_info)
+        if connect:
+            sock_info = self.__socket()
+            try:
+                # Since __check_auth was called in __socket
+                # there is no need to call it here.
+                auth.authenticate(credentials, sock_info, self.__simple_command)
+                sock_info.authset.add(credentials)
+            finally:
+                self.__pool.maybe_return_socket(sock_info)
 
         self.__auth_credentials[source] = credentials
 
@@ -813,7 +816,8 @@ class MongoClient(common.BaseObject):
            Deprecated support for external cursor managers.
         """
         warnings.warn("Support for external cursor managers is deprecated "
-                      "and will be removed in PyMongo 3.0.", DeprecationWarning)
+                      "and will be removed in PyMongo 3.0.",
+                      DeprecationWarning, stacklevel=2)
         manager = manager_class(self)
         if not isinstance(manager, CursorManager):
             raise TypeError("manager_class must be a subclass of "
@@ -853,8 +857,8 @@ class MongoClient(common.BaseObject):
                     break
 
         if "code" in details:
-            if details["code"] in [11000, 11001, 12582]:
-                raise DuplicateKeyError(details["err"])
+            if details["code"] in (11000, 11001, 12582):
+                raise DuplicateKeyError(details["err"], details["code"])
             else:
                 raise OperationFailure(details["err"], details["code"])
         else:

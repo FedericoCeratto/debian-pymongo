@@ -629,11 +629,11 @@ class Collection(common.BaseObject):
             the start of the result set) when returning the results
           - `limit` (optional): the maximum number of results to
             return
-          - `timeout` (optional): if True, any returned cursor will be
-            subject to the normal timeout behavior of the mongod
-            process. Otherwise, the returned cursor will never timeout
-            at the server. Care should be taken to ensure that cursors
-            with timeout turned off are properly closed.
+          - `timeout` (optional): if True (the default), any returned
+            cursor is closed by the server after 10 minutes of
+            inactivity. If set to False, the returned cursor will never
+            time out on the server. Care should be taken to ensure that
+            cursors with timeout turned off are properly closed.
           - `snapshot` (optional): if True, snapshot mode will be used
             for this query. Snapshot mode assures no duplicates are
             returned, or objects missed, which were present at both
@@ -744,7 +744,7 @@ class Collection(common.BaseObject):
         >>> my_collection.create_index([("mike", pymongo.DESCENDING),
         ...                             ("eliot", pymongo.ASCENDING)])
 
-        All optional index creation paramaters should be passed as
+        All optional index creation parameters should be passed as
         keyword arguments to this method. Valid options include:
 
           - `name`: custom name to use for this index - if none is
@@ -800,7 +800,7 @@ class Collection(common.BaseObject):
         if 'ttl' in kwargs:
             cache_for = kwargs.pop('ttl')
             warnings.warn("ttl is deprecated. Please use cache_for instead.",
-                          DeprecationWarning)
+                          DeprecationWarning, stacklevel=2)
 
         keys = helpers._index_list(key_or_list)
         index_doc = helpers._index_document(keys)
@@ -855,7 +855,7 @@ class Collection(common.BaseObject):
         Returns the name of the created index if an index is actually
         created. Returns ``None`` if the index already exists.
 
-        All optional index creation paramaters should be passed as
+        All optional index creation parameters should be passed as
         keyword arguments to this method. Valid options include:
 
           - `name`: custom name to use for this index - if none is
@@ -1375,7 +1375,7 @@ class Collection(common.BaseObject):
                   isinstance(sort, dict) and len(sort) == 1):
                 warnings.warn("Passing mapping types for `sort` is deprecated,"
                               " use a list of (key, direction) pairs instead",
-                              DeprecationWarning)
+                              DeprecationWarning, stacklevel=2)
                 kwargs['sort'] = sort
             else:
                 raise TypeError("sort must be a list of (key, direction) "
