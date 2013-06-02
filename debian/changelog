@@ -1,3 +1,10 @@
+pymongo (2.5.2-1) unstable; urgency=high
+
+  * New upstream release. (Closes: #710597)
+  * Releasing to unstable.
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Sun, 02 Jun 2013 11:11:10 +0100
+
 pymongo (2.5-1) experimental; urgency=low
 
   * New upstream release.
