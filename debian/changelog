@@ -1,3 +1,11 @@
+pymongo (2.5.2-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * Split out python3 extensions python-pymongo-ext and python3-bson-ext so 
+    that they can have proper dependencies (Closes: #712112)
+
+ -- Scott Kitterman <scott@kitterman.com>  Mon, 19 Aug 2013 18:55:56 -0400
+
 pymongo (2.5.2-1) unstable; urgency=high
 
   * New upstream release. (Closes: #710597)

@@ -52,6 +52,17 @@ Description: C-coded extension to the python-pymongo package
  Pymongo provides an interface to easily access MongoDB from Python.
  This package contains an extension written in C for higher performance.
 
+Package: python3-pymongo-ext
+Architecture: any-i386 any-ia64 any-amd64
+Depends: python3-bson (= ${binary:Version}), ${shlibs:Depends}
+ , ${python3:Depends}
+ , ${misc:Depends}
+ , python3-pymongo
+Recommends: python3-gridfs (>= ${source:Version})
+Description: C-coded extension to the python3-pymongo package
+ Pymongo provides an interface to easily access MongoDB from Python 3.
+ This package contains an extension written in C for higher performance.
+
 Package: python-pymongo-doc
 Architecture: all
 Depends: ${misc:Depends}, libjs-jquery, libjs-underscore
@@ -107,5 +118,13 @@ Depends: ${python:Depends}, ${misc:Depends}, ${shlibs:Depends}, python-bson
 Provides: ${python:Provides}
 Description: C-coded extension to the python-bson package
  BSON Python module contains all of the Binary JSON encoding and decoding
+ logic for MongoDB.
+ This package contains an extension written in C for higher performance.
+
+Package: python3-bson-ext
+Architecture: any-i386 any-ia64 any-amd64
+Depends: ${python3:Depends}, ${misc:Depends}, ${shlibs:Depends}, python3-bson
+Description: C-coded extension to the python3-bson package
+ BSON Python 3 module contains all of the Binary JSON encoding and decoding
  logic for MongoDB.
  This package contains an extension written in C for higher performance.
