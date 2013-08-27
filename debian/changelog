@@ -1,10 +1,10 @@
-pymongo (2.6-1) UNRELEASED; urgency=low
+pymongo (2.6-1) unstable; urgency=low
 
   * Imported Upstream version 2.6 (Closes: #709487)
   * Michael G Schwern copyright on time64.c added (Closes: #720612).
   * Improved *-ext dependencies (Closes: #715395)
 
- -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 27 Aug 2013 21:51:25 +0100
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Tue, 27 Aug 2013 22:01:21 +0100
 
 pymongo (2.5.2-1.1) unstable; urgency=low
 
