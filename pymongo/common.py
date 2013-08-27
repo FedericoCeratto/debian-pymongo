@@ -218,6 +218,8 @@ VALIDATORS = {
     'journal': validate_boolean,
     'connecttimeoutms': validate_timeout_or_none,
     'sockettimeoutms': validate_timeout_or_none,
+    'waitqueuetimeoutms': validate_timeout_or_none,
+    'waitqueuemultiple': validate_positive_integer_or_none,
     'ssl': validate_boolean,
     'ssl_keyfile': validate_readable,
     'ssl_certfile': validate_readable,
@@ -232,7 +234,21 @@ VALIDATORS = {
     'use_greenlets': validate_boolean,
     'authmechanism': validate_auth_mechanism,
     'authsource': validate_basestring,
+    'gssapiservicename': validate_basestring,
 }
+
+
+_AUTH_OPTIONS = frozenset(['gssapiservicename'])
+
+
+def validate_auth_option(option, value):
+    """Validate optional authentication parameters.
+    """
+    lower, value = validate(option, value)
+    if lower not in _AUTH_OPTIONS:
+        raise ConfigurationError('Unknown '
+                                 'authentication option: %s' % (option,))
+    return lower, value
 
 
 def validate(option, value):

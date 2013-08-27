@@ -69,6 +69,7 @@ doc/api/pymongo/replica_set_connection.rst
 doc/api/pymongo/son_manipulator.rst
 doc/api/pymongo/uri_parser.rst
 doc/examples/aggregation.rst
+doc/examples/authentication.rst
 doc/examples/custom_type.rst
 doc/examples/geo.rst
 doc/examples/gevent.rst
