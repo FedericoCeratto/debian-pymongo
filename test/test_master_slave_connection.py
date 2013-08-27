@@ -79,7 +79,7 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
     def test_use_greenlets(self):
         self.assertFalse(self.client.use_greenlets)
 
-        if thread_util.have_greenlet:
+        if thread_util.have_gevent:
             master = MongoClient(host, port, use_greenlets=True)
             slaves = [
                 MongoClient(slave.host, slave.port, use_greenlets=True)
@@ -124,7 +124,7 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
                 Slave.calls += 1
                 if self._fail:
                     raise AutoReconnect()
-                return 'sent'
+                return (None, 'sent')
 
         class NotRandomList(object):
             last_idx = -1
