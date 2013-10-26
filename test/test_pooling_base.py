@@ -998,6 +998,28 @@ class _TestMaxPoolSize(_TestPoolingBase):
         # Call end_request() but not start_request()
         self._test_max_pool_size(0, 1)
 
+    def test_max_pool_size_with_connection_failure(self):
+        # The pool acquires its semaphore before attempting to connect; ensure
+        # it releases the semaphore on connection failure.
+        class TestPool(Pool):
+            def connect(self, pair):
+                raise socket.error()
+
+        test_pool = TestPool(
+            pair=('example.com', 27017),
+            max_size=1,
+            net_timeout=1,
+            conn_timeout=1,
+            use_ssl=False,
+            wait_queue_timeout=1,
+            use_greenlets=self.use_greenlets)
+
+        # First call to get_socket fails; if pool doesn't release its semaphore
+        # then the second call raises "ConnectionFailure: Timed out waiting for
+        # socket from pool" instead of the socket.error.
+        for i in range(2):
+            self.assertRaises(socket.error, test_pool.get_socket)
+
 
 class SocketGetter(MongoThread):
     """Utility for _TestMaxOpenSockets and _TestWaitQueueMultiple"""
@@ -1018,7 +1040,7 @@ class _TestMaxOpenSockets(_TestPoolingBase):
     To be run both with threads and with greenlets.
     """
     def get_pool_with_wait_queue_timeout(self, wait_queue_timeout):
-        return self.get_pool(('127.0.0.1', 27017),
+        return self.get_pool((host, port),
                              1, None, None,
                              False,
                              wait_queue_timeout=wait_queue_timeout,
@@ -1066,7 +1088,7 @@ class _TestWaitQueueMultiple(_TestPoolingBase):
     To be run both with threads and with greenlets.
     """
     def get_pool_with_wait_queue_multiple(self, wait_queue_multiple):
-        return self.get_pool(('127.0.0.1', 27017),
+        return self.get_pool((host, port),
                              2, None, None,
                              False,
                              wait_queue_timeout=None,
