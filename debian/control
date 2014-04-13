@@ -4,12 +4,15 @@ Priority: optional
 Maintainer: Federico Ceratto <federico.ceratto@gmail.com>
 Uploaders: Janos Guljas <janos@resenje.org>
 Build-Depends: debhelper (>= 9~),
+ dh-python,
  python-all-dev (>= 2.6.6-3~),
+ python-nose,
+ python3-nose,
  python-setuptools (>= 0.6.14),
  python-sphinx,
  python3-all-dev (>= 3.1),
  python3-setuptools
-Standards-Version: 3.9.4
+Standards-Version: 3.9.5
 X-Python-Version: >= 2.5
 X-Python3-Version: >= 3.1
 Homepage: http://api.mongodb.org/python/
@@ -22,6 +25,7 @@ Depends: python-bson (= ${binary:Version}), ${python:Depends}, ${misc:Depends}
 Recommends: python-gridfs (>= ${source:Version})
  , python-pymongo-ext [any-i386 any-ia64 any-amd64]
 Provides: ${python:Provides}
+Suggests: python-pymongo-doc
 Description: Python interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
  document-oriented data store. Pymongo provides an interface
@@ -34,6 +38,7 @@ Depends: python3-bson (= ${binary:Version}), ${python3:Depends}, ${misc:Depends}
 Recommends: python3-gridfs (>= ${source:Version})
  , python3-pymongo-ext [any-i386 any-ia64 any-amd64]
 Provides: ${python3:Provides}
+Suggests: python-pymongo-doc
 Description: Python3 interface to the MongoDB document-oriented database
  MongoDB is a high-performance, open source, schema-free
  document-oriented data store. Pymongo provides an interface
@@ -67,7 +72,7 @@ Description: C-coded extension to the python3-pymongo package
 
 Package: python-pymongo-doc
 Architecture: all
-Depends: ${misc:Depends}, libjs-jquery, libjs-underscore
+Depends: ${sphinxdoc:Depends}, ${misc:Depends}, libjs-jquery, libjs-underscore
 Section: doc
 Description: Python interface to the MongoDB document-oriented database (documentation)
  MongoDB is a high-performance, open source, schema-free
