@@ -1,7 +1,7 @@
 LICENSE
 MANIFEST.in
 README.rst
-distribute_setup.py
+ez_setup.py
 setup.py
 bson/__init__.py
 bson/_cbsonmodule.c
@@ -19,6 +19,7 @@ bson/max_key.py
 bson/min_key.py
 bson/objectid.py
 bson/py3compat.py
+bson/regex.py
 bson/son.py
 bson/time64.c
 bson/time64.h
@@ -47,13 +48,16 @@ doc/api/bson/json_util.rst
 doc/api/bson/max_key.rst
 doc/api/bson/min_key.rst
 doc/api/bson/objectid.rst
+doc/api/bson/regex.rst
 doc/api/bson/son.rst
 doc/api/bson/timestamp.rst
 doc/api/bson/tz_util.rst
 doc/api/gridfs/errors.rst
 doc/api/gridfs/grid_file.rst
 doc/api/gridfs/index.rst
+doc/api/pymongo/bulk.rst
 doc/api/pymongo/collection.rst
+doc/api/pymongo/command_cursor.rst
 doc/api/pymongo/connection.rst
 doc/api/pymongo/cursor.rst
 doc/api/pymongo/cursor_manager.rst
@@ -70,12 +74,14 @@ doc/api/pymongo/son_manipulator.rst
 doc/api/pymongo/uri_parser.rst
 doc/examples/aggregation.rst
 doc/examples/authentication.rst
+doc/examples/bulk.rst
 doc/examples/custom_type.rst
 doc/examples/geo.rst
 doc/examples/gevent.rst
 doc/examples/gridfs.rst
 doc/examples/high_availability.rst
 doc/examples/index.rst
+doc/examples/mod_wsgi.rst
 doc/examples/requests.rst
 gridfs/__init__.py
 gridfs/errors.py
@@ -83,7 +89,9 @@ gridfs/grid_file.py
 pymongo/__init__.py
 pymongo/_cmessagemodule.c
 pymongo/auth.py
+pymongo/bulk.py
 pymongo/collection.py
+pymongo/command_cursor.py
 pymongo/common.py
 pymongo/connection.py
 pymongo/cursor.py
@@ -92,6 +100,7 @@ pymongo/database.py
 pymongo/errors.py
 pymongo/helpers.py
 pymongo/master_slave_connection.py
+pymongo/member.py
 pymongo/message.py
 pymongo/mongo_client.py
 pymongo/mongo_replica_set_client.py
@@ -107,10 +116,12 @@ pymongo.egg-info/SOURCES.txt
 pymongo.egg-info/dependency_links.txt
 pymongo.egg-info/top_level.txt
 test/__init__.py
+test/pymongo_mocks.py
 test/qcheck.py
 test/test_auth.py
 test/test_binary.py
 test/test_bson.py
+test/test_bulk.py
 test/test_client.py
 test/test_code.py
 test/test_collection.py
@@ -124,6 +135,7 @@ test/test_gridfs.py
 test/test_json_util.py
 test/test_legacy_connections.py
 test/test_master_slave_connection.py
+test/test_mongos_ha.py
 test/test_objectid.py
 test/test_pooling.py
 test/test_pooling_base.py
@@ -131,6 +143,7 @@ test/test_pooling_gevent.py
 test/test_pymongo.py
 test/test_read_preferences.py
 test/test_replica_set_client.py
+test/test_replica_set_reconfig.py
 test/test_son.py
 test/test_son_manipulator.py
 test/test_ssl.py
@@ -146,7 +159,6 @@ test/certificates/client.pem
 test/high_availability/ha_tools.py
 test/high_availability/test_ha.py
 test/mod_wsgi_test/test_client.py
-test/slow/test_high_concurrency.py
 tools/README.rst
 tools/benchmark.py
 tools/clean.py

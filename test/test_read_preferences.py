@@ -1,4 +1,4 @@
-# Copyright 2011-2012 10gen, Inc.
+# Copyright 2011-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -212,11 +212,11 @@ class TestCommandAndReadPreference(TestReplicaSetClientBase):
             secondary_acceptable_latency_ms=1000*1000)
 
     def tearDown(self):
-        self.c.close()
-
         # We create a lot of collections and indexes in these tests, so drop
-        # the database
-        self._get_client().drop_database('pymongo_test')
+        # the database.
+        self.c.drop_database('pymongo_test')
+        self.c.close()
+        self.c = None
         super(TestCommandAndReadPreference, self).tearDown()
 
     def executed_on_which_member(self, client, fn, *args, **kwargs):
@@ -392,6 +392,31 @@ class TestCommandAndReadPreference(TestReplicaSetClientBase):
             ('reduce', 'function() { }'),
             ('out', {'inline': True})
         ])))
+
+    def test_aggregate_command_with_out(self):
+        if not version.at_least(self.c, (2, 5, 2)):
+            raise SkipTest("Aggregation with $out requires MongoDB >= 2.5.2")
+
+        # Tests aggregate command when pipeline contains $out.
+        self.c.pymongo_test.test.insert({"x": 1, "y": 1}, w=self.w)
+        self.c.pymongo_test.test.insert({"x": 1, "y": 2}, w=self.w)
+        self.c.pymongo_test.test.insert({"x": 2, "y": 1}, w=self.w)
+        self.c.pymongo_test.test.insert({"x": 2, "y": 2}, w=self.w)
+
+        # Aggregate with $out always goes to primary, doesn't obey read prefs.
+        # Test aggregate command sent directly to db.command.
+        self._test_fn(False, lambda: self.c.pymongo_test.command(
+            "aggregate", "test",
+            pipeline=[{"$match": {"x": 1}}, {"$out": "agg_out"}]
+        ))
+
+        # Test aggregate when sent through the collection aggregate function.
+        self._test_fn(False, lambda: self.c.pymongo_test.test.aggregate(
+            [{"$match": {"x": 2}}, {"$out": "agg_out"}]
+        ))
+
+        self.c.pymongo_test.drop_collection("test")
+        self.c.pymongo_test.drop_collection("agg_out")
 
     def test_create_collection(self):
         # Collections should be created on primary, obviously

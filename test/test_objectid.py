@@ -1,4 +1,4 @@
-# Copyright 2009-2012 10gen, Inc.
+# Copyright 2009-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 import datetime
 import pickle
-import warnings
 import unittest
 import sys
 import time
@@ -38,10 +37,6 @@ def oid(x):
 
 
 class TestObjectId(unittest.TestCase):
-
-    def setUp(self):
-        pass
-
     def test_creation(self):
         self.assertRaises(TypeError, ObjectId, 4)
         self.assertRaises(TypeError, ObjectId, 175.0)
