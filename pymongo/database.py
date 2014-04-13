@@ -1,4 +1,4 @@
-# Copyright 2009-2012 10gen, Inc.
+# Copyright 2009-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 
 """Database level operations."""
 
+import warnings
+
 from bson.binary import OLD_UUID_SUBTYPE
 from bson.code import Code
 from bson.dbref import DBRef
@@ -21,9 +23,9 @@ from bson.son import SON
 from pymongo import auth, common, helpers
 from pymongo.collection import Collection
 from pymongo.errors import (CollectionInvalid,
+                            ConfigurationError,
                             InvalidName,
                             OperationFailure)
-from pymongo.son_manipulator import ObjectIdInjector
 from pymongo import read_preferences as rp
 
 
@@ -64,6 +66,7 @@ class Database(common.BaseObject):
                              secondary_acceptable_latency_ms=(
                                  connection.secondary_acceptable_latency_ms),
                              safe=connection.safe,
+                             uuidrepresentation=connection.uuid_subtype,
                              **connection.write_concern)
 
         if not isinstance(name, basestring):
@@ -80,7 +83,6 @@ class Database(common.BaseObject):
         self.__incoming_copying_manipulators = []
         self.__outgoing_manipulators = []
         self.__outgoing_copying_manipulators = []
-        self.add_son_manipulator(ObjectIdInjector())
 
     def add_son_manipulator(self, manipulator):
         """Add a new son manipulator to this database.
@@ -269,9 +271,80 @@ class Database(common.BaseObject):
             son = manipulator.transform_outgoing(son, collection)
         return son
 
+    def _command(self, command, value=1,
+                 check=True, allowable_errors=None,
+                 uuid_subtype=OLD_UUID_SUBTYPE, compile_re=True, **kwargs):
+        """Internal command helper.
+        """
+
+        if isinstance(command, basestring):
+            command = SON([(command, value)])
+
+        command_name = command.keys()[0].lower()
+        must_use_master = kwargs.pop('_use_master', False)
+        if command_name not in rp.secondary_ok_commands:
+            must_use_master = True
+
+        # Special-case: mapreduce can go to secondaries only if inline
+        if command_name == 'mapreduce':
+            out = command.get('out') or kwargs.get('out')
+            if not isinstance(out, dict) or not out.get('inline'):
+                must_use_master = True
+
+        # Special-case: aggregate with $out cannot go to secondaries.
+        if command_name == 'aggregate':
+            for stage in kwargs.get('pipeline', []):
+                if '$out' in stage:
+                    must_use_master = True
+                    break
+
+        extra_opts = {
+            'as_class': kwargs.pop('as_class', None),
+            'slave_okay': kwargs.pop('slave_okay', self.slave_okay),
+            '_must_use_master': must_use_master,
+            '_uuid_subtype': uuid_subtype
+        }
+
+        extra_opts['read_preference'] = kwargs.pop(
+            'read_preference',
+            self.read_preference)
+        extra_opts['tag_sets'] = kwargs.pop(
+            'tag_sets',
+            self.tag_sets)
+        extra_opts['secondary_acceptable_latency_ms'] = kwargs.pop(
+            'secondary_acceptable_latency_ms',
+            self.secondary_acceptable_latency_ms)
+        extra_opts['compile_re'] = compile_re
+
+        fields = kwargs.get('fields')
+        if fields is not None and not isinstance(fields, dict):
+            kwargs['fields'] = helpers._fields_list_to_dict(fields)
+
+        command.update(kwargs)
+
+        # Warn if must_use_master will override read_preference.
+        if (extra_opts['read_preference'] != rp.ReadPreference.PRIMARY and
+                extra_opts['_must_use_master']):
+            warnings.warn("%s does not support %s read preference "
+                          "and will be routed to the primary instead." %
+                          (command_name,
+                           rp.modes[extra_opts['read_preference']]),
+                          UserWarning)
+
+        cursor = self["$cmd"].find(command, **extra_opts).limit(-1)
+        for doc in cursor:
+            result = doc
+
+        if check:
+            msg = "command %s failed: %%s" % repr(command).replace("%", "%%")
+            helpers._check_command_response(result, self.connection.disconnect,
+                                            msg, allowable_errors)
+
+        return result, cursor.conn_id
+
     def command(self, command, value=1,
                 check=True, allowable_errors=[],
-                uuid_subtype=OLD_UUID_SUBTYPE, **kwargs):
+                uuid_subtype=OLD_UUID_SUBTYPE, compile_re=True, **kwargs):
         """Issue a MongoDB command.
 
         Send command `command` to the database and return the
@@ -316,6 +389,12 @@ class Database(common.BaseObject):
             in this list will be ignored by error-checking
           - `uuid_subtype` (optional): The BSON binary subtype to use
             for a UUID used in this command.
+          - `compile_re` (optional): if ``False``, don't attempt to compile
+            BSON regular expressions into Python regular expressions. Return
+            instances of :class:`~bson.regex.Regex` instead. Can avoid
+            :exc:`~bson.errors.InvalidBSON` errors when receiving
+            Python-incompatible regular expressions, for example from
+            ``currentOp``
           - `read_preference`: The read preference for this connection.
             See :class:`~pymongo.read_preferences.ReadPreference` for available
             options.
@@ -335,6 +414,8 @@ class Database(common.BaseObject):
 
         .. note:: ``command`` ignores the ``network_timeout`` parameter.
 
+        .. versionchanged:: 2.7
+           Added ``compile_re`` option.
         .. versionchanged:: 2.3
            Added `tag_sets` and `secondary_acceptable_latency_ms` options.
         .. versionchanged:: 2.2
@@ -350,52 +431,8 @@ class Database(common.BaseObject):
         .. mongodoc:: commands
         .. _localThreshold: http://docs.mongodb.org/manual/reference/mongos/#cmdoption-mongos--localThreshold
         """
-
-        if isinstance(command, basestring):
-            command = SON([(command, value)])
-
-        command_name = command.keys()[0].lower()
-        must_use_master = kwargs.pop('_use_master', False)
-        if command_name not in rp.secondary_ok_commands:
-            must_use_master = True
-
-        # Special-case: mapreduce can go to secondaries only if inline
-        if command_name == 'mapreduce':
-            out = command.get('out') or kwargs.get('out')
-            if not isinstance(out, dict) or not out.get('inline'):
-                must_use_master = True
-
-        extra_opts = {
-            'as_class': kwargs.pop('as_class', None),
-            'slave_okay': kwargs.pop('slave_okay', self.slave_okay),
-            '_must_use_master': must_use_master,
-            '_uuid_subtype': uuid_subtype
-        }
-
-        extra_opts['read_preference'] = kwargs.pop(
-            'read_preference',
-            self.read_preference)
-        extra_opts['tag_sets'] = kwargs.pop(
-            'tag_sets',
-            self.tag_sets)
-        extra_opts['secondary_acceptable_latency_ms'] = kwargs.pop(
-            'secondary_acceptable_latency_ms',
-            self.secondary_acceptable_latency_ms)
-
-        fields = kwargs.get('fields')
-        if fields is not None and not isinstance(fields, dict):
-            kwargs['fields'] = helpers._fields_list_to_dict(fields)
-
-        command.update(kwargs)
-
-        result = self["$cmd"].find_one(command, **extra_opts)
-
-        if check:
-            msg = "command %s failed: %%s" % repr(command).replace("%", "%%")
-            helpers._check_command_response(result, self.connection.disconnect,
-                                            msg, allowable_errors)
-
-        return result
+        return self._command(command, value, check, allowable_errors,
+                             uuid_subtype, compile_re, **kwargs)[0]
 
     def collection_names(self, include_system_collections=True):
         """Get a list of all the collection names in this database.
@@ -614,6 +651,74 @@ class Database(common.BaseObject):
     def next(self):
         raise TypeError("'Database' object is not iterable")
 
+    def _default_role(self, read_only):
+        if self.name == "admin":
+            if read_only:
+                return "readAnyDatabase"
+            else:
+                return "root"
+        else:
+            if read_only:
+                return "read"
+            else:
+                return "dbOwner"
+
+    def _create_or_update_user(
+            self, create, name, password, read_only, **kwargs):
+        """Use a command to create (if create=True) or modify a user.
+        """
+        opts = {}
+        if read_only or (create and "roles" not in kwargs):
+            warnings.warn("Creating a user with the read_only option "
+                          "or without roles is deprecated in MongoDB "
+                          ">= 2.6", DeprecationWarning)
+
+            opts["roles"] = [self._default_role(read_only)]
+
+        elif read_only:
+            warnings.warn("The read_only option is deprecated in MongoDB "
+                          ">= 2.6, use 'roles' instead", DeprecationWarning)
+
+        if password is not None:
+            # We always salt and hash client side.
+            if "digestPassword" in kwargs:
+                raise ConfigurationError("The digestPassword option is not "
+                                         "supported via add_user. Please use "
+                                         "db.command('createUser', ...) "
+                                         "instead for this option.")
+            opts["pwd"] = auth._password_digest(name, password)
+            opts["digestPassword"] = False
+
+        opts["writeConcern"] = self._get_wc_override()
+        opts.update(kwargs)
+
+        if create:
+            command_name = "createUser"
+        else:
+            command_name = "updateUser"
+
+        self.command(command_name, name, **opts)
+
+    def _legacy_add_user(self, name, password, read_only, **kwargs):
+        """Uses v1 system to add users, i.e. saving to system.users.
+        """
+        user = self.system.users.find_one({"user": name}) or {"user": name}
+        if password is not None:
+            user["pwd"] = auth._password_digest(name, password)
+        if read_only is not None:
+            user["readOnly"] = read_only
+        user.update(kwargs)
+
+        try:
+            self.system.users.save(user, **self._get_wc_override())
+        except OperationFailure, exc:
+            # First admin user add fails gle in MongoDB >= 2.1.2
+            # See SERVER-4225 for more information.
+            if 'login' in str(exc):
+                pass
+            else:
+                raise
+
     def add_user(self, name, password=None, read_only=None, **kwargs):
         """Create user `name` with password `password`.
 
@@ -642,23 +747,37 @@ class Database(common.BaseObject):
 
         .. versionadded:: 1.4
         """
-
-        user = self.system.users.find_one({"user": name}) or {"user": name}
+        if not isinstance(name, basestring):
+            raise TypeError("name must be an instance "
+                            "of %s" % (basestring.__name__,))
         if password is not None:
-            user["pwd"] = auth._password_digest(name, password)
+            if not isinstance(password, basestring):
+                raise TypeError("password must be an instance "
+                                "of %s or None" % (basestring.__name__,))
+            if len(password) == 0:
+                raise ValueError("password can't be empty")
         if read_only is not None:
-            user["readOnly"] = common.validate_boolean('read_only', read_only)
-        user.update(kwargs)
+            read_only = common.validate_boolean('read_only', read_only)
+            if 'roles' in kwargs:
+                raise ConfigurationError("Can not use "
+                                         "read_only and roles together")
 
         try:
-            self.system.users.save(user, **self._get_wc_override())
-        except OperationFailure, e:
-            # First admin user add fails gle in MongoDB >= 2.1.2
-            # See SERVER-4225 for more information.
-            if 'login' in str(e):
-                pass
-            else:
-                raise
+            uinfo = self.command("usersInfo", name)
+        except OperationFailure, exc:
+            # MongoDB >= 2.5.3 requires the use of commands to manage
+            # users. "No such command" error didn't return an error
+            # code (59) before MongoDB 2.4.7 so we assume that an error
+            # code of None means the userInfo command doesn't exist and
+            # we should fall back to the legacy add user code.
+            if exc.code in (59, None):
+                self._legacy_add_user(name, password, read_only, **kwargs)
+                return
+            raise
+
+        # Create the user if not found in uinfo, otherwise update one.
+        self._create_or_update_user(
+            (not uinfo["users"]), name, password, read_only, **kwargs)
 
     def remove_user(self, name):
         """Remove user `name` from this :class:`Database`.
@@ -671,7 +790,17 @@ class Database(common.BaseObject):
 
         .. versionadded:: 1.4
         """
-        self.system.users.remove({"user": name}, **self._get_wc_override())
+
+        try:
+            self.command("dropUser", name,
+                         writeConcern=self._get_wc_override())
+        except OperationFailure, exc:
+            # See comment in add_user try / except above.
+            if exc.code in (59, None):
+                self.system.users.remove({"user": name},
+                                         **self._get_wc_override())
+                return
+            raise
 
     def authenticate(self, name, password=None,
                      source=None, mechanism='MONGODB-CR', **kwargs):

@@ -1,4 +1,4 @@
-# Copyright 2013 10gen, Inc.
+# Copyright 2013-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ class TestConnection(unittest.TestCase):
 
         # To preserve legacy Connection's behavior, max_size should be None.
         # Pool should handle this without error.
-        self.assertEqual(None, c._MongoClient__pool.max_size)
+        self.assertEqual(None, get_pool(c).max_size)
         c.end_request()
 
         # Connection's network_timeout argument is translated into

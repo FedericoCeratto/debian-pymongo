@@ -1,4 +1,4 @@
-# Copyright 2009-2012 10gen, Inc.
+# Copyright 2009-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ SLOW_ONLY = 1
 ALL = 2
 """Profile all operations."""
 
-version_tuple = (2, 6, 3)
+version_tuple = (2, 7)
 
 def get_version_string():
     if isinstance(version_tuple[-1], basestring):
@@ -77,6 +77,8 @@ def get_version_string():
 version = get_version_string()
 """Current version of PyMongo."""
 
+from pymongo.common import (MIN_SUPPORTED_WIRE_VERSION,
+                            MAX_SUPPORTED_WIRE_VERSION)
 from pymongo.connection import Connection
 from pymongo.mongo_client import MongoClient
 from pymongo.mongo_replica_set_client import MongoReplicaSetClient

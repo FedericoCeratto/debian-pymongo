@@ -1,4 +1,4 @@
-# Copyright 2009-2012 10gen, Inc.
+# Copyright 2009-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,8 @@ from pymongo.mongo_client import MongoClient
 from pymongo.collection import Collection
 from pymongo.master_slave_connection import MasterSlaveConnection
 from test import host, port, host2, port2, host3, port3
-from test.utils import TestRequestMixin
+from test.utils import TestRequestMixin, get_pool
+
 
 class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
 
@@ -69,6 +70,7 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
             # that make this fail
             pass
 
+        self.master = self.slaves = self.db = self.client = None
         super(TestMasterSlaveConnection, self).tearDown()
 
     def test_types(self):
@@ -274,7 +276,7 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
         client = self.client
 
         # In a request, all ops go through master
-        pool = client.master._MongoClient__pool
+        pool = get_pool(client.master)
         client.master.end_request()
         self.assertNotInRequestAndDifferentSock(client, pool)
 

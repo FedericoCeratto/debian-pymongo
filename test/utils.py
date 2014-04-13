@@ -1,4 +1,4 @@
-# Copyright 2012 10gen, Inc.
+# Copyright 2012-2014 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,17 +14,43 @@
 
 """Utilities for testing pymongo
 """
+
+import os
+import struct
+import sys
 import threading
 
+from nose.plugins.skip import SkipTest
 from pymongo import MongoClient, MongoReplicaSetClient
 from pymongo.errors import AutoReconnect
 from pymongo.pool import NO_REQUEST, NO_SOCKET_YET, SocketInfo
-from test import host, port
+from test import host, port, version
 
+
+try:
+    import gevent
+    has_gevent = True
+except ImportError:
+    has_gevent = False
+
+
+# No functools in Python 2.4
+def my_partial(f, *args, **kwargs):
+    def _f(*new_args, **new_kwargs):
+        final_kwargs = kwargs.copy()
+        final_kwargs.update(new_kwargs)
+        return f(*(args + new_args), **final_kwargs)
+
+    return _f
 
 def one(s):
     """Get one element of a set"""
     return iter(s).next()
+
+def oid_generated_on_client(doc):
+    """Is this process's PID in the document's _id?"""
+    pid_from_doc = struct.unpack(">H", doc['_id'].binary[7:9])[0]
+    return (os.getpid() % 0xFFFF) == pid_from_doc
 
 def delay(sec):
     # Javascript sleep() only available in MongoDB since version ~1.9
@@ -36,19 +62,74 @@ def delay(sec):
 def get_command_line(client):
     command_line = client.admin.command('getCmdLineOpts')
     assert command_line['ok'] == 1, "getCmdLineOpts() failed"
-    return command_line['argv']
+    return command_line
+
+def server_started_with_option(client, cmdline_opt, config_opt):
+    """Check if the server was started with a particular option.
+    
+    :Parameters:
+      - `cmdline_opt`: The command line option (i.e. --nojournal)
+      - `config_opt`: The config file option (i.e. nojournal)
+    """
+    command_line = get_command_line(client)
+    if 'parsed' in command_line:
+        parsed = command_line['parsed']
+        if config_opt in parsed:
+            return parsed[config_opt]
+    argv = command_line['argv']
+    return cmdline_opt in argv
+
 
 def server_started_with_auth(client):
-    argv = get_command_line(client)
+    command_line = get_command_line(client)
+    # MongoDB >= 2.0
+    if 'parsed' in command_line:
+        parsed = command_line['parsed']
+        # MongoDB >= 2.6
+        if 'security' in parsed:
+            security = parsed['security']
+            # >= rc3
+            if 'authorization' in security:
+                return security['authorization'] == 'enabled'
+            # < rc3
+            return security.get('auth', False) or bool(security.get('keyFile'))
+        return parsed.get('auth', False) or bool(parsed.get('keyFile'))
+    # Legacy
+    argv = command_line['argv']
     return '--auth' in argv or '--keyFile' in argv
 
+
+def server_started_with_nojournal(client):
+    command_line = get_command_line(client)
+
+    # MongoDB 2.6.
+    if 'parsed' in command_line:
+        parsed = command_line['parsed']
+        if 'storage' in parsed:
+            storage = parsed['storage']
+            if 'journal' in storage:
+                return not storage['journal']['enabled']
+
+    return server_started_with_option(client, '--nojournal', 'nojournal')
+
+
 def server_is_master_with_slave(client):
-    return '--master' in get_command_line(client)
+    command_line = get_command_line(client)
+    if 'parsed' in command_line:
+        return command_line['parsed'].get('master', False)
+    return '--master' in command_line['argv']
 
 def drop_collections(db):
     for coll in db.collection_names():
         if not coll.startswith('system'):
             db.drop_collection(coll)
+
+def remove_all_users(db):
+    if version.at_least(db.connection, (2, 5, 3, -1)):
+        db.command({"dropAllUsersFromDatabase": 1})
+    else:
+        db.system.users.remove({})
+
 
 def joinall(threads):
     """Join threads with a 5-minute timeout, assert joins succeeded"""
@@ -265,7 +346,7 @@ def assertReadFromAll(testcase, rsc, members, *args, **kwargs):
 
 def get_pool(client):
     if isinstance(client, MongoClient):
-        return client._MongoClient__pool
+        return client._MongoClient__member.pool
     elif isinstance(client, MongoReplicaSetClient):
         rs_state = client._MongoReplicaSetClient__rs_state
         return rs_state.primary_member.pool
@@ -283,27 +364,16 @@ class TestRequestMixin(object):
     """Inherit from this class and from unittest.TestCase to get some
     convenient methods for testing connection pools and requests
     """
-    def get_sock(self, pool):
-        # MongoClient calls Pool.get_socket((host, port)), whereas RSC sets
-        # Pool.pair at construction-time and just calls Pool.get_socket().
-        # Deal with either case so we can use TestRequestMixin to test pools
-        # from MongoClient and from RSC.
-        if not pool.pair:
-            sock_info = pool.get_socket((host, port))
-        else:
-            sock_info = pool.get_socket()
-        return sock_info
-
     def assertSameSock(self, pool):
-        sock_info0 = self.get_sock(pool)
-        sock_info1 = self.get_sock(pool)
+        sock_info0 = pool.get_socket()
+        sock_info1 = pool.get_socket()
         self.assertEqual(sock_info0, sock_info1)
         pool.maybe_return_socket(sock_info0)
         pool.maybe_return_socket(sock_info1)
 
     def assertDifferentSock(self, pool):
-        sock_info0 = self.get_sock(pool)
-        sock_info1 = self.get_sock(pool)
+        sock_info0 = pool.get_socket()
+        sock_info1 = pool.get_socket()
         self.assertNotEqual(sock_info0, sock_info1)
         pool.maybe_return_socket(sock_info0)
         pool.maybe_return_socket(sock_info1)
@@ -332,3 +402,185 @@ class TestRequestMixin(object):
         for pool in pools:
             self.assertFalse(pool.in_request())
             self.assertDifferentSock(pool)
+
+
+# Constants for run_threads and _TestLazyConnectMixin.
+NTRIALS = 5
+NTHREADS = 10
+
+
+def run_threads(collection, target, use_greenlets):
+    """Run a target function in many threads.
+
+    target is a function taking a Collection and an integer.
+    """
+    threads = []
+    for i in range(NTHREADS):
+        bound_target = my_partial(target, collection, i)
+        if use_greenlets:
+            threads.append(gevent.Greenlet(run=bound_target))
+        else:
+            threads.append(threading.Thread(target=bound_target))
+
+    for t in threads:
+        t.start()
+
+    for t in threads:
+        t.join(30)
+        if use_greenlets:
+            # bool(Greenlet) is True if it's alive.
+            assert not t
+        else:
+            assert not t.isAlive()
+
+
+def lazy_client_trial(reset, target, test, get_client, use_greenlets):
+    """Test concurrent operations on a lazily-connecting client.
+
+    `reset` takes a collection and resets it for the next trial.
+
+    `target` takes a lazily-connecting collection and an index from
+    0 to NTHREADS, and performs some operation, e.g. an insert.
+
+    `test` takes the lazily-connecting collection and asserts a
+    post-condition to prove `target` succeeded.
+    """
+    if use_greenlets and not has_gevent:
+        raise SkipTest('Gevent not installed')
+
+    collection = MongoClient(host, port).pymongo_test.test
+
+    # Make concurrency bugs more likely to manifest.
+    interval = None
+    if not sys.platform.startswith('java'):
+        if sys.version_info >= (3, 2):
+            interval = sys.getswitchinterval()
+            sys.setswitchinterval(1e-6)
+        else:
+            interval = sys.getcheckinterval()
+            sys.setcheckinterval(1)
+
+    try:
+        for i in range(NTRIALS):
+            reset(collection)
+            lazy_client = get_client(
+                _connect=False, use_greenlets=use_greenlets)
+
+            lazy_collection = lazy_client.pymongo_test.test
+            run_threads(lazy_collection, target, use_greenlets)
+            test(lazy_collection)
+
+    finally:
+        if not sys.platform.startswith('java'):
+            if sys.version_info >= (3, 2):
+                sys.setswitchinterval(interval)
+            else:
+                sys.setcheckinterval(interval)
+
+
+class _TestLazyConnectMixin(object):
+    """Test concurrent operations on a lazily-connecting client.
+
+    Inherit from this class and from unittest.TestCase, and override
+    _get_client(self, **kwargs), for testing a lazily-connecting
+    client, i.e. a client initialized with _connect=False.
+
+    Set use_greenlets = True to test with Gevent.
+    """
+    use_greenlets = False
+
+    NTRIALS = 5
+    NTHREADS = 10
+
+    def test_insert(self):
+        def reset(collection):
+            collection.drop()
+
+        def insert(collection, _):
+            collection.insert({})
+
+        def test(collection):
+            self.assertEqual(NTHREADS, collection.count())
+
+        lazy_client_trial(
+            reset, insert, test,
+            self._get_client, self.use_greenlets)
+
+    def test_save(self):
+        def reset(collection):
+            collection.drop()
+
+        def save(collection, _):
+            collection.save({})
+
+        def test(collection):
+            self.assertEqual(NTHREADS, collection.count())
+
+        lazy_client_trial(
+            reset, save, test,
+            self._get_client, self.use_greenlets)
+
+    def test_update(self):
+        def reset(collection):
+            collection.drop()
+            collection.insert([{'i': 0}])
+
+        # Update doc 10 times.
+        def update(collection, i):
+            collection.update({}, {'$inc': {'i': 1}})
+
+        def test(collection):
+            self.assertEqual(NTHREADS, collection.find_one()['i'])
+
+        lazy_client_trial(
+            reset, update, test,
+            self._get_client, self.use_greenlets)
+
+    def test_remove(self):
+        def reset(collection):
+            collection.drop()
+            collection.insert([{'i': i} for i in range(NTHREADS)])
+
+        def remove(collection, i):
+            collection.remove({'i': i})
+
+        def test(collection):
+            self.assertEqual(0, collection.count())
+
+        lazy_client_trial(
+            reset, remove, test,
+            self._get_client, self.use_greenlets)
+
+    def test_find_one(self):
+        results = []
+
+        def reset(collection):
+            collection.drop()
+            collection.insert({})
+            results[:] = []
+
+        def find_one(collection, _):
+            results.append(collection.find_one())
+
+        def test(collection):
+            self.assertEqual(NTHREADS, len(results))
+
+        lazy_client_trial(
+            reset, find_one, test,
+            self._get_client, self.use_greenlets)
+
+    def test_max_bson_size(self):
+        # Client should have sane defaults before connecting, and should update
+        # its configuration once connected.
+        c = self._get_client(_connect=False)
+        self.assertEqual(16 * (1024 ** 2), c.max_bson_size)
+        self.assertEqual(2 * c.max_bson_size, c.max_message_size)
+
+        # Make the client connect, so that it sets its max_bson_size and
+        # max_message_size attributes.
+        ismaster = c.db.command('ismaster')
+        self.assertEqual(ismaster['maxBsonObjectSize'], c.max_bson_size)
+        if 'maxMessageSizeBytes' in ismaster:
+            self.assertEqual(
+                ismaster['maxMessageSizeBytes'],
+                c.max_message_size)
