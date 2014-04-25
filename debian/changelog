@@ -1,6 +1,8 @@
-pymongo (2.7-1) UNRELEASED; urgency=low
+pymongo (2.7-1) unstable; urgency=low
 
   * New upstream release.
+  * Switch to Pybuild
+  * Standards-Version bumped to 3.9.5
 
  -- Federico Ceratto <federico.ceratto@gmail.com>  Sun, 13 Apr 2014 11:17:20 +0100
 
