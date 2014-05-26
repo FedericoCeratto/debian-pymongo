@@ -28,6 +28,7 @@ from pymongo.cursor import Cursor
 from pymongo.errors import InvalidName, OperationFailure
 from pymongo.helpers import _check_write_command_response
 from pymongo.message import _INSERT, _UPDATE, _DELETE
+from pymongo.read_preferences import ReadPreference
 
 
 try:
@@ -125,9 +126,12 @@ class Collection(common.BaseObject):
         if options:
             if "size" in options:
                 options["size"] = float(options["size"])
-            self.__database.command("create", self.__name, **options)
+            self.__database.command("create", self.__name,
+                                    read_preference=ReadPreference.PRIMARY,
+                                    **options)
         else:
-            self.__database.command("create", self.__name)
+            self.__database.command("create", self.__name,
+                                    read_preference=ReadPreference.PRIMARY)
 
     def __getattr__(self, name):
         """Get a sub-collection of this collection by name.
@@ -550,6 +554,10 @@ class Collection(common.BaseObject):
                 result['updatedExisting'] = True
             else:
                 result['updatedExisting'] = False
+                # MongoDB >= 2.6.0 returns the upsert _id in an array
+                # element. Break it out for backward compatibility.
+                if isinstance(result.get('upserted'), list):
+                    result['upserted'] = result['upserted'][0]['_id']
 
             return result
 
@@ -942,32 +950,39 @@ class Collection(common.BaseObject):
 
         Takes either a single key or a list of (key, direction) pairs.
         The key(s) must be an instance of :class:`basestring`
-        (:class:`str` in python 3), and the direction(s) must be one of
+        (:class:`str` in python 3), and the direction(s) should be one of
         (:data:`~pymongo.ASCENDING`, :data:`~pymongo.DESCENDING`,
         :data:`~pymongo.GEO2D`, :data:`~pymongo.GEOHAYSTACK`,
-        :data:`~pymongo.GEOSPHERE`, :data:`~pymongo.HASHED`).
+        :data:`~pymongo.GEOSPHERE`, :data:`~pymongo.HASHED`,
+        :data:`~pymongo.TEXT`).
 
-        To create a single key index on the key ``'mike'`` we just use
-        a string argument:
+        To create a simple ascending index on the key ``'mike'`` we just
+        use a string argument::
 
-        >>> my_collection.create_index("mike")
+          >>> my_collection.create_index("mike")
 
         For a compound index on ``'mike'`` descending and ``'eliot'``
-        ascending we need to use a list of tuples:
+        ascending we need to use a list of tuples::
 
-        >>> my_collection.create_index([("mike", pymongo.DESCENDING),
-        ...                             ("eliot", pymongo.ASCENDING)])
+          >>> my_collection.create_index([("mike", pymongo.DESCENDING),
+          ...                             ("eliot", pymongo.ASCENDING)])
 
         All optional index creation parameters should be passed as
-        keyword arguments to this method. Valid options include:
+        keyword arguments to this method. For example::
+
+          >>> my_collection.create_index([("mike", pymongo.DESCENDING)],
+          ...                            background=True)
+
+        Valid options include:
 
           - `name`: custom name to use for this index - if none is
             given, a name will be generated
-          - `unique`: should this index guarantee uniqueness?
-          - `dropDups` or `drop_dups`: should we drop duplicates
-          - `background`: if this index should be created in the
+          - `unique`: if ``True`` creates a unique constraint on the index
+          - `dropDups` or `drop_dups`: if ``True`` duplicate values are dropped
+            during index creation when creating a unique index
+          - `background`: if ``True`` this index should be created in the
             background
-          - `sparse`: if True, omit from the index any documents that lack
+          - `sparse`: if ``True``, omit from the index any documents that lack
             the indexed field
           - `bucketSize` or `bucket_size`: for use with geoHaystack indexes.
             Number of documents to group together within a certain proximity
@@ -1037,9 +1052,11 @@ class Collection(common.BaseObject):
         index.update(kwargs)
 
         try:
-            self.__database.command('createIndexes', self.name, indexes=[index])
+            self.__database.command('createIndexes', self.name,
+                                    read_preference=ReadPreference.PRIMARY,
+                                    indexes=[index])
         except OperationFailure, exc:
-            if exc.code in (59, None):
+            if exc.code in common.COMMAND_NOT_FOUND_CODES:
                 index["ns"] = self.__full_name
                 self.__database.system.indexes.insert(index, manipulate=False,
                                                       check_keys=False,
@@ -1057,11 +1074,13 @@ class Collection(common.BaseObject):
 
         Takes either a single key or a list of (key, direction) pairs.
         The key(s) must be an instance of :class:`basestring`
-        (:class:`str` in python 3), and the direction(s) must be one of
+        (:class:`str` in python 3), and the direction(s) should be one of
         (:data:`~pymongo.ASCENDING`, :data:`~pymongo.DESCENDING`,
         :data:`~pymongo.GEO2D`, :data:`~pymongo.GEOHAYSTACK`,
-        :data:`~pymongo.GEOSPHERE`, :data:`~pymongo.HASHED`).
-        See :meth:`create_index` for a detailed example.
+        :data:`~pymongo.GEOSPHERE`, :data:`~pymongo.HASHED`,
+        :data:`pymongo.TEXT`).
+
+        See :meth:`create_index` for detailed examples.
 
         Unlike :meth:`create_index`, which attempts to create an index
         unconditionally, :meth:`ensure_index` takes advantage of some
@@ -1087,12 +1106,12 @@ class Collection(common.BaseObject):
 
           - `name`: custom name to use for this index - if none is
             given, a name will be generated
-          - `unique`: should this index guarantee uniqueness?
-          - `dropDups` or `drop_dups`: should we drop duplicates
-            during index creation when creating a unique index?
-          - `background`: if this index should be created in the
+          - `unique`: if ``True`` creates a unique constraint on the index
+          - `dropDups` or `drop_dups`: if ``True`` duplicate values are dropped
+            during index creation when creating a unique index
+          - `background`: if ``True`` this index should be created in the
             background
-          - `sparse`: if True, omit from the index any documents that lack
+          - `sparse`: if ``True``, omit from the index any documents that lack
             the indexed field
           - `bucketSize` or `bucket_size`: for use with geoHaystack indexes.
             Number of documents to group together within a certain proximity
@@ -1159,7 +1178,8 @@ class Collection(common.BaseObject):
         """Drops the specified index on this collection.
 
         Can be used on non-existant collections or collections with no
-        indexes.  Raises OperationFailure on an error. `index_or_name`
+        indexes.  Raises OperationFailure on an error (e.g. trying to
+        drop an index that does not exist). `index_or_name`
         can be either an index name (as returned by `create_index`),
         or an index specifier (as passed to `create_index`). An index
         specifier should be a list of (key, direction) pairs. Raises
@@ -1183,7 +1203,9 @@ class Collection(common.BaseObject):
 
         self.__database.connection._purge_index(self.__database.name,
                                                 self.__name, name)
-        self.__database.command("dropIndexes", self.__name, index=name,
+        self.__database.command("dropIndexes", self.__name,
+                                read_preference=ReadPreference.PRIMARY,
+                                index=name,
                                 allowable_errors=["ns not found"])
 
     def reindex(self):
@@ -1195,7 +1217,8 @@ class Collection(common.BaseObject):
 
         .. versionadded:: 1.11+
         """
-        return self.__database.command("reIndex", self.__name)
+        return self.__database.command("reIndex", self.__name,
+                                       read_preference=ReadPreference.PRIMARY)
 
     def index_information(self):
         """Get information on this collection's indexes.
@@ -1416,9 +1439,10 @@ class Collection(common.BaseObject):
             raise InvalidName("collection names must not contain '$'")
 
         new_name = "%s.%s" % (self.__database.name, new_name)
-        self.__database.connection.admin.command("renameCollection",
-                                                 self.__full_name,
-                                                 to=new_name, **kwargs)
+        client = self.__database.connection
+        client.admin.command("renameCollection", self.__full_name,
+                             read_preference=ReadPreference.PRIMARY,
+                             to=new_name, **kwargs)
 
     def distinct(self, key):
         """Get a list of distinct values for `key` among all documents
@@ -1645,6 +1669,7 @@ class Collection(common.BaseObject):
 
         out = self.__database.command("findAndModify", self.__name,
                                       allowable_errors=[no_obj_error],
+                                      read_preference=ReadPreference.PRIMARY,
                                       uuid_subtype=self.uuid_subtype,
                                       **kwargs)
 

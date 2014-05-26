@@ -22,6 +22,7 @@ import sys
 import time
 import thread
 import unittest
+import warnings
 
 
 sys.path[0:0] = [""]
@@ -43,6 +44,7 @@ from pymongo.errors import (AutoReconnect,
 from test import version, host, port, pair
 from test.pymongo_mocks import MockClient
 from test.utils import (assertRaisesExactly,
+                        catch_warnings,
                         delay,
                         is_mongos,
                         remove_all_users,
@@ -224,6 +226,9 @@ class TestClient(unittest.TestCase, TestRequestMixin):
         # from a master in a master-slave pair.
         if server_is_master_with_slave(c):
             raise SkipTest("SERVER-2329")
+        if (not version.at_least(c, (2, 6, 0)) and
+                is_mongos(c) and server_started_with_auth(c)):
+            raise SkipTest("Need mongos >= 2.6.0 to test with authentication")
         # We test copy twice; once starting in a request and once not. In
         # either case the copy should succeed (because it starts a request
         # internally) and should leave us in the same state as before the copy.
@@ -260,8 +265,7 @@ class TestClient(unittest.TestCase, TestRequestMixin):
         self.assertEqual("bar", c.pymongo_test2.test.find_one()["foo"])
 
         # See SERVER-6427 for mongos
-        if (version.at_least(c, (1, 3, 3, 1)) and
-            not is_mongos(c) and server_started_with_auth(c)):
+        if not is_mongos(c) and server_started_with_auth(c):
 
             c.drop_database("pymongo_test1")
 
@@ -315,11 +319,16 @@ class TestClient(unittest.TestCase, TestRequestMixin):
     def test_from_uri(self):
         c = MongoClient(host, port)
 
-        self.assertEqual(c, MongoClient("mongodb://%s:%d" % (host, port)))
-        self.assertTrue(MongoClient(
-            "mongodb://%s:%d" % (host, port), slave_okay=True).slave_okay)
-        self.assertTrue(MongoClient(
-            "mongodb://%s:%d/?slaveok=true;w=2" % (host, port)).slave_okay)
+        ctx = catch_warnings()
+        try:
+            warnings.simplefilter("ignore", DeprecationWarning)
+            self.assertEqual(c, MongoClient("mongodb://%s:%d" % (host, port)))
+            self.assertTrue(MongoClient(
+                "mongodb://%s:%d" % (host, port), slave_okay=True).slave_okay)
+            self.assertTrue(MongoClient(
+                "mongodb://%s:%d/?slaveok=true;w=2" % (host, port)).slave_okay)
+        finally:
+            ctx.exit()
 
     def test_get_default_database(self):
         c = MongoClient("mongodb://%s:%d/foo" % (host, port), _connect=False)
