@@ -23,7 +23,7 @@ Package: python-pymongo
 Architecture: any
 Depends: python-bson (= ${binary:Version}), ${python:Depends}, ${misc:Depends}
 Recommends: python-gridfs (>= ${source:Version})
- , python-pymongo-ext [any-i386 any-ia64 any-amd64]
+ , python-pymongo-ext [any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el]
 Provides: ${python:Provides}
 Suggests: python-pymongo-doc
 Description: Python interface to the MongoDB document-oriented database
@@ -36,7 +36,7 @@ Package: python3-pymongo
 Architecture: any
 Depends: python3-bson (= ${binary:Version}), ${python3:Depends}, ${misc:Depends}
 Recommends: python3-gridfs (>= ${source:Version})
- , python3-pymongo-ext [any-i386 any-ia64 any-amd64]
+ , python3-pymongo-ext [any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el]
 Provides: ${python3:Provides}
 Suggests: python-pymongo-doc
 Description: Python3 interface to the MongoDB document-oriented database
@@ -46,7 +46,7 @@ Description: Python3 interface to the MongoDB document-oriented database
  Consider installing the python-pymongo-ext C extension to improve performance.
 
 Package: python-pymongo-ext
-Architecture: any-i386 any-ia64 any-amd64
+Architecture: any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el
 Depends: ${misc:Depends}
  , ${python:Depends}
  , ${shlibs:Depends}
@@ -59,7 +59,7 @@ Description: C-coded extension to the python-pymongo package
  This package contains an extension written in C for higher performance.
 
 Package: python3-pymongo-ext
-Architecture: any-i386 any-ia64 any-amd64
+Architecture: any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el
 Depends: ${misc:Depends}
  , ${python:Depends}
  , ${shlibs:Depends}
@@ -104,7 +104,7 @@ Description: Python3 implementation of GridFS for MongoDB
 Package: python-bson
 Architecture: any
 Depends: ${python:Depends}, ${misc:Depends}, ${shlibs:Depends}
-Recommends: python-bson-ext [any-i386 any-ia64 any-amd64]
+Recommends: python-bson-ext [any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el]
 Provides: ${python:Provides}
 Description: Python implementation of BSON for MongoDB
  BSON Python module contains all of the Binary JSON encoding and decoding
@@ -113,14 +113,14 @@ Description: Python implementation of BSON for MongoDB
 Package: python3-bson
 Architecture: any
 Depends: ${python3:Depends}, ${misc:Depends}, ${shlibs:Depends}
-Recommends: python3-bson-ext [any-i386 any-ia64 any-amd64]
+Recommends: python3-bson-ext [any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el]
 Provides: ${python3:Provides}
 Description: Python3 implementation of BSON for MongoDB
  BSON Python3 module contains all of the Binary JSON encoding and decoding
  logic for MongoDB.
 
 Package: python-bson-ext
-Architecture: any-i386 any-ia64 any-amd64
+Architecture: any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el
 Depends: ${python:Depends}
  , ${misc:Depends}
  , ${shlibs:Depends}
@@ -132,7 +132,7 @@ Description: C-coded extension to the python-bson package
  This package contains an extension written in C for higher performance.
 
 Package: python3-bson-ext
-Architecture: any-i386 any-ia64 any-amd64
+Architecture: any-amd64 any-armel any-armhf any-i386 any-ia64 any-mipsel any-ppc64el
 Depends: ${python3:Depends}
  , ${misc:Depends}
  , ${shlibs:Depends}
