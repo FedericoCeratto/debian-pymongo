@@ -1,3 +1,9 @@
+pymongo (2.7.1-2) UNRELEASED; urgency=low
+
+  * Add architectures armel armhf mipsel ppc64el
+
+ -- Federico Ceratto <federico.ceratto@gmail.com>  Sat, 28 Jun 2014 16:58:13 +0100
+
 pymongo (2.7.1-1) unstable; urgency=low
 
   * New upstream release.
