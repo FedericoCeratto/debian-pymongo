@@ -356,7 +356,7 @@ class Collection(common.BaseObject):
            Support for passing `getLastError` options as keyword
            arguments.
         .. versionchanged:: 1.1
-           Bulk insert works with any iterable
+           Bulk insert works with an iterable sequence of documents.
 
         .. mongodoc:: insert
         """
@@ -378,11 +378,14 @@ class Collection(common.BaseObject):
             def gen():
                 db = self.__database
                 for doc in docs:
+                    # Apply user-configured SON manipulators. This order of
+                    # operations is required for backwards compatibility,
+                    # see PYTHON-709.
+                    doc = db._apply_incoming_manipulators(doc, self)
                     if '_id' not in doc:
                         doc['_id'] = ObjectId()
 
-                    # Apply user-configured SON manipulators.
-                    doc = db._fix_incoming(doc, self)
+                    doc = db._apply_incoming_copying_manipulators(doc, self)
                     ids.append(doc['_id'])
                     yield doc
         else:
