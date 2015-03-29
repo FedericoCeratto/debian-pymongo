@@ -25,7 +25,7 @@ sys.path[0:0] = [""]
 
 import bson
 from bson.py3compat import b
-from bson import json_util
+from bson import json_util, EPOCH_AWARE
 from bson.binary import Binary, MD5_SUBTYPE, USER_DEFINED_SUBTYPE
 from bson.code import Code
 from bson.dbref import DBRef
@@ -37,6 +37,7 @@ from bson.son import RE_TYPE
 from bson.timestamp import Timestamp
 from bson.tz_util import utc
 
+from test import skip_restricted_localhost
 from test.test_client import get_client
 
 PY3 = sys.version_info[0] == 3
@@ -81,6 +82,33 @@ class TestJsonUtil(unittest.TestCase):
         # only millis, not micros
         self.round_trip({"date": datetime.datetime(2009, 12, 9, 15,
                                                    49, 45, 191000, utc)})
+
+        jsn = '{"dt": { "$date" : "1970-01-01T00:00:00.000+0000"}}'
+        self.assertEqual(EPOCH_AWARE, json_util.loads(jsn)["dt"])
+        # No explicit offset
+        jsn = '{"dt": { "$date" : "1970-01-01T00:00:00.000"}}'
+        self.assertEqual(EPOCH_AWARE, json_util.loads(jsn)["dt"])
+        # Localtime behind UTC
+        jsn = '{"dt": { "$date" : "1969-12-31T16:00:00.000-0800"}}'
+        self.assertEqual(EPOCH_AWARE, json_util.loads(jsn)["dt"])
+        # Localtime ahead of UTC
+        jsn = '{"dt": { "$date" : "1970-01-01T01:00:00.000+0100"}}'
+        self.assertEqual(EPOCH_AWARE, json_util.loads(jsn)["dt"])
+
+        # Unsupported offset format
+        jsn = '{"dt": { "$date" : "1970-01-01T01:00:00.000+01:00"}}'
+        self.assertRaises(ValueError, json_util.loads, jsn)
+
+        dtm = datetime.datetime(1, 1, 1, 1, 1, 1, 0, utc)
+        jsn = '{"dt": {"$date": -62135593139000}}'
+        self.assertEqual(dtm, json_util.loads(jsn)["dt"])
+        jsn = '{"dt": {"$date": {"$numberLong": "-62135593139000"}}}'
+        self.assertEqual(dtm, json_util.loads(jsn)["dt"])
+
+        # Test support for microsecond accuracy
+        dtm = datetime.datetime(2014, 9, 17, 22, 41, 22, 201000, utc)
+        jsn = '{"dt": { "$date" : "2014-09-17T15:41:22.201-0700"}}'
+        self.assertEqual(dtm, json_util.loads(jsn)["dt"])
 
     def test_regex_object_hook(self):
         # simplejson or the builtin json module.
@@ -149,14 +177,14 @@ class TestJsonUtil(unittest.TestCase):
         self.round_trip({"m": MaxKey()})
 
     def test_timestamp(self):
-        res = json_util.dumps({"ts": Timestamp(4, 13)}, default=json_util.default)
+        dct = {"ts": Timestamp(4, 13)}
+        res = json_util.dumps(dct, default=json_util.default)
         if not PY24:
             # Check order.
-            self.assertEqual('{"ts": {"t": 4, "i": 13}}', res)
+            self.assertEqual('{"ts": {"$timestamp": {"t": 4, "i": 13}}}', res)
 
-        dct = json_util.loads(res)
-        self.assertEqual(dct['ts']['t'], 4)
-        self.assertEqual(dct['ts']['i'], 13)
+        rtdct = json_util.loads(res)
+        self.assertEqual(dct, rtdct)
 
     def test_uuid(self):
         if not bson.has_uuid():
@@ -220,7 +248,16 @@ class TestJsonUtil(unittest.TestCase):
             # Check order.
             self.assertEqual('{"$code": "return z", "$scope": {"z": 2}}', res)
 
+    def test_undefined(self):
+        json = '{"name": {"$undefined": true}}'
+        self.assertEqual(json_util.loads(json)['name'], None)
+
+    def test_numberlong(self):
+        json = '{"weight": {"$numberLong": 65535}}'
+        self.assertEqual(json_util.loads(json)['weight'], long(65535))
+
     def test_cursor(self):
+        skip_restricted_localhost()
         db = self.db
 
         db.drop_collection("test")

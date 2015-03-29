@@ -15,7 +15,6 @@
 """Test the database module."""
 
 import datetime
-import os
 import re
 import sys
 import warnings
@@ -39,7 +38,6 @@ from pymongo import (ALL,
 from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import (CollectionInvalid,
-                            ConfigurationError,
                             ExecutionTimeout,
                             InvalidName,
                             OperationFailure)
@@ -47,10 +45,13 @@ from pymongo.son_manipulator import (AutoReference,
                                      NamespaceInjector,
                                      SONManipulator,
                                      ObjectIdShuffler)
-from test import version
+from test import version, skip_restricted_localhost
 from test.utils import (catch_warnings, get_command_line,
-                        is_mongos, remove_all_users, server_started_with_auth)
+                        is_mongos, server_started_with_auth)
 from test.test_client import get_client
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestDatabase(unittest.TestCase):
@@ -104,21 +105,13 @@ class TestDatabase(unittest.TestCase):
         self.assertRaises(InvalidName, db.create_collection, "coll..ection")
 
         test = db.create_collection("test")
+        self.assertTrue(u"test" in db.collection_names())
         test.save({"hello": u"world"})
         self.assertEqual(db.test.find_one()["hello"], "world")
-        self.assertTrue(u"test" in db.collection_names())
 
         db.drop_collection("test.foo")
         db.create_collection("test.foo")
         self.assertTrue(u"test.foo" in db.collection_names())
-        expected = {}
-        if version.at_least(self.client, (2, 7, 0)):
-            # usePowerOf2Sizes server default
-            expected["flags"] = 1
-        result = db.test.foo.options()
-        # mongos 2.2.x adds an $auth field when auth is enabled.
-        result.pop('$auth', None)
-        self.assertEqual(result, expected)
         self.assertRaises(CollectionInvalid, db.create_collection, "test.foo")
 
     def test_collection_names(self):
@@ -260,36 +253,40 @@ class TestDatabase(unittest.TestCase):
         if is_mongos(self.client):
             raise SkipTest('getpreverror not supported by mongos')
         db = self.client.pymongo_test
+        ctx = catch_warnings()
+        try:
+            warnings.simplefilter("ignore", DeprecationWarning)
+            db.reset_error_history()
+            self.assertEqual(None, db.error())
+            self.assertEqual(None, db.previous_error())
 
-        db.reset_error_history()
-        self.assertEqual(None, db.error())
-        self.assertEqual(None, db.previous_error())
+            db.command("forceerror", check=False)
+            self.assertTrue(db.error())
+            self.assertTrue(db.previous_error())
 
-        db.command("forceerror", check=False)
-        self.assertTrue(db.error())
-        self.assertTrue(db.previous_error())
+            db.command("forceerror", check=False)
+            self.assertTrue(db.error())
+            prev_error = db.previous_error()
+            self.assertEqual(prev_error["nPrev"], 1)
+            del prev_error["nPrev"]
+            prev_error.pop("lastOp", None)
+            error = db.error()
+            error.pop("lastOp", None)
+            # getLastError includes "connectionId" in recent
+            # server versions, getPrevError does not.
+            error.pop("connectionId", None)
+            self.assertEqual(error, prev_error)
 
-        db.command("forceerror", check=False)
-        self.assertTrue(db.error())
-        prev_error = db.previous_error()
-        self.assertEqual(prev_error["nPrev"], 1)
-        del prev_error["nPrev"]
-        prev_error.pop("lastOp", None)
-        error = db.error()
-        error.pop("lastOp", None)
-        # getLastError includes "connectionId" in recent
-        # server versions, getPrevError does not.
-        error.pop("connectionId", None)
-        self.assertEqual(error, prev_error)
+            db.test.find_one()
+            self.assertEqual(None, db.error())
+            self.assertTrue(db.previous_error())
+            self.assertEqual(db.previous_error()["nPrev"], 2)
 
-        db.test.find_one()
-        self.assertEqual(None, db.error())
-        self.assertTrue(db.previous_error())
-        self.assertEqual(db.previous_error()["nPrev"], 2)
-
-        db.reset_error_history()
-        self.assertEqual(None, db.error())
-        self.assertEqual(None, db.previous_error())
+            db.reset_error_history()
+            self.assertEqual(None, db.error())
+            self.assertEqual(None, db.previous_error())
+        finally:
+            ctx.exit()
 
     def test_command(self):
         db = self.client.admin
@@ -338,11 +335,16 @@ class TestDatabase(unittest.TestCase):
         db.test.remove({})
         db.test.save({"i": 1})
 
-        db.test.update({"i": 1}, {"$set": {"i": 2}}, w=0)
-        self.assertTrue(db.last_status()["updatedExisting"])
+        ctx = catch_warnings()
+        try:
+            warnings.simplefilter("ignore", DeprecationWarning)
+            db.test.update({"i": 1}, {"$set": {"i": 2}}, w=0)
+            self.assertTrue(db.last_status()["updatedExisting"])
 
-        db.test.update({"i": 1}, {"$set": {"i": 500}}, w=0)
-        self.assertFalse(db.last_status()["updatedExisting"])
+            db.test.update({"i": 1}, {"$set": {"i": 500}}, w=0)
+            self.assertFalse(db.last_status()["updatedExisting"])
+        finally:
+            ctx.exit()
 
     def test_password_digest(self):
         self.assertRaises(TypeError, auth._password_digest, 5)
@@ -357,319 +359,6 @@ class TestDatabase(unittest.TestCase):
                          auth._password_digest(u"mike", u"password"))
         self.assertEqual(auth._password_digest("Gustave", u"Dor\xe9"),
                          u"81e0e2364499209f466e75926a162d73")
-
-    def test_authenticate_add_remove_user(self):
-        if (is_mongos(self.client) and not
-            version.at_least(self.client, (2, 0, 0))):
-            raise SkipTest("Auth with sharding requires MongoDB >= 2.0.0")
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-
-        db = self.client.pymongo_test
-
-        # Configuration errors
-        self.assertRaises(ValueError, db.add_user, "user", '')
-        self.assertRaises(TypeError, db.add_user, "user", 'password', 15)
-        self.assertRaises(ConfigurationError, db.add_user,
-                          "user", 'password', 'True')
-        self.assertRaises(ConfigurationError, db.add_user,
-                          "user", 'password', True, roles=['read'])
-
-        if version.at_least(self.client, (2, 5, 3, -1)):
-            ctx = catch_warnings()
-            try:
-                warnings.simplefilter("error", DeprecationWarning)
-                self.assertRaises(DeprecationWarning, db.add_user,
-                                  "user", "password")
-                self.assertRaises(DeprecationWarning, db.add_user,
-                                  "user", "password", True)
-            finally:
-                ctx.exit()
-
-            self.assertRaises(ConfigurationError, db.add_user,
-                              "user", "password", digestPassword=True)
-
-        self.client.admin.add_user("admin", "password")
-        self.client.admin.authenticate("admin", "password")
-
-        try:
-            # Add / authenticate / remove
-            db.add_user("mike", "password")
-            self.assertRaises(TypeError, db.authenticate, 5, "password")
-            self.assertRaises(TypeError, db.authenticate, "mike", 5)
-            self.assertRaises(OperationFailure,
-                              db.authenticate, "mike", "not a real password")
-            self.assertRaises(OperationFailure,
-                              db.authenticate, "faker", "password")
-            self.assertTrue(db.authenticate("mike", "password"))
-            db.logout()
-            self.assertTrue(db.authenticate(u"mike", u"password"))
-            db.remove_user("mike")
-            db.logout()
-
-            self.assertRaises(OperationFailure,
-                              db.authenticate, "mike", "password")
-
-            # Add / authenticate / change password
-            self.assertRaises(OperationFailure,
-                              db.authenticate, "Gustave", u"Dor\xe9")
-            db.add_user("Gustave", u"Dor\xe9")
-            self.assertTrue(db.authenticate("Gustave", u"Dor\xe9"))
-            db.add_user("Gustave", "password")
-            db.logout()
-            self.assertRaises(OperationFailure,
-                              db.authenticate, "Gustave", u"Dor\xe9")
-            self.assertTrue(db.authenticate("Gustave", u"password"))
-
-            if not version.at_least(self.client, (2, 5, 3, -1)):
-                # Add a readOnly user
-                db.add_user("Ross", "password", read_only=True)
-                db.logout()
-                self.assertTrue(db.authenticate("Ross", u"password"))
-                self.assertTrue(db.system.users.find({"readOnly": True}).count())
-                db.logout()
-
-        # Cleanup
-        finally:
-            remove_all_users(db)
-            self.client.admin.remove_user("admin")
-            self.client.admin.logout()
-
-    def test_make_user_readonly(self):
-        if (is_mongos(self.client)
-                and not version.at_least(self.client, (2, 0, 0))):
-            raise SkipTest('Auth with sharding requires MongoDB >= 2.0.0')
-
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-
-        admin = self.client.admin
-        admin.add_user('admin', 'pw')
-        admin.authenticate('admin', 'pw')
-
-        db = self.client.pymongo_test
-
-        try:
-            # Make a read-write user.
-            db.add_user('jesse', 'pw')
-            admin.logout()
-
-            # Check that we're read-write by default.
-            db.authenticate('jesse', 'pw')
-            db.collection.insert({})
-            db.logout()
-
-            # Make the user read-only.
-            admin.authenticate('admin', 'pw')
-            db.add_user('jesse', 'pw', read_only=True)
-            admin.logout()
-
-            db.authenticate('jesse', 'pw')
-            self.assertRaises(OperationFailure, db.collection.insert, {})
-        finally:
-            # Cleanup
-            admin.authenticate('admin', 'pw')
-            remove_all_users(db)
-            admin.remove_user("admin")
-            admin.logout()
-
-    def test_default_roles(self):
-        if not version.at_least(self.client, (2, 5, 3, -1)):
-            raise SkipTest("Default roles only exist in MongoDB >= 2.5.3")
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-
-        # "Admin" user
-        db = self.client.admin
-        db.add_user('admin', 'pass')
-        try:
-            db.authenticate('admin', 'pass')
-            info = db.command('usersInfo', 'admin')['users'][0]
-            self.assertEqual("root", info['roles'][0]['role'])
-
-            # Read only "admin" user
-            db.add_user('ro-admin', 'pass', read_only=True)
-            db.logout()
-            db.authenticate('ro-admin', 'pass')
-            info = db.command('usersInfo', 'ro-admin')['users'][0]
-            self.assertEqual("readAnyDatabase", info['roles'][0]['role'])
-            db.logout()
-
-        # Cleanup
-        finally:
-            db.authenticate('admin', 'pass')
-            remove_all_users(db)
-            db.logout()
-
-        db.connection.disconnect()
-
-        # "Non-admin" user
-        db = self.client.pymongo_test
-        db.add_user('user', 'pass')
-        try:
-            db.authenticate('user', 'pass')
-            info = db.command('usersInfo', 'user')['users'][0]
-            self.assertEqual("dbOwner", info['roles'][0]['role'])
-
-            # Read only "Non-admin" user
-            db.add_user('ro-user', 'pass', read_only=True)
-            db.logout()
-            db.authenticate('ro-user', 'pass')
-            info = db.command('usersInfo', 'ro-user')['users'][0]
-            self.assertEqual("read", info['roles'][0]['role'])
-            db.logout()
-
-        # Cleanup
-        finally:
-            db.authenticate('user', 'pass')
-            remove_all_users(db)
-            db.logout()
-
-    def test_new_user_cmds(self):
-        if not version.at_least(self.client, (2, 5, 3, -1)):
-            raise SkipTest("User manipulation through commands "
-                           "requires MongoDB >= 2.5.3")
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-
-        db = self.client.pymongo_test
-        db.add_user("amalia", "password", roles=["userAdmin"])
-        db.authenticate("amalia", "password")
-        try:
-            # This tests the ability to update user attributes.
-            db.add_user("amalia", "new_password",
-                        customData={"secret": "koalas"})
-
-            user_info = db.command("usersInfo", "amalia")
-            self.assertTrue(user_info["users"])
-            amalia_user = user_info["users"][0]
-            self.assertEqual(amalia_user["user"], "amalia")
-            self.assertEqual(amalia_user["customData"], {"secret": "koalas"})
-        finally:
-            db.remove_user("amalia")
-            db.logout()
-
-    def test_authenticate_and_safe(self):
-        if (is_mongos(self.client) and not
-            version.at_least(self.client, (2, 0, 0))):
-            raise SkipTest("Auth with sharding requires MongoDB >= 2.0.0")
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-        db = self.client.auth_test
-
-        db.add_user("bernie", "password",
-                    roles=["userAdmin", "dbAdmin", "readWrite"])
-        db.authenticate("bernie", "password")
-        try:
-            db.test.remove({})
-            self.assertTrue(db.test.insert({"bim": "baz"}))
-            self.assertEqual(1, db.test.count())
-
-            self.assertEqual(1,
-                             db.test.update({"bim": "baz"},
-                                            {"$set": {"bim": "bar"}}).get('n'))
-
-            self.assertEqual(1,
-                             db.test.remove({}).get('n'))
-
-            self.assertEqual(0, db.test.count())
-        finally:
-            db.remove_user("bernie")
-            db.logout()
-
-    def test_authenticate_and_request(self):
-        if (is_mongos(self.client) and not
-            version.at_least(self.client, (2, 0, 0))):
-            raise SkipTest("Auth with sharding requires MongoDB >= 2.0.0")
-        if not server_started_with_auth(self.client):
-            raise SkipTest('Authentication is not enabled on server')
-
-        # Database.authenticate() needs to be in a request - check that it
-        # always runs in a request, and that it restores the request state
-        # (in or not in a request) properly when it's finished.
-        self.assertFalse(self.client.auto_start_request)
-        db = self.client.pymongo_test
-        db.add_user("mike", "password",
-                    roles=["userAdmin", "dbAdmin", "readWrite"])
-        try:
-            self.assertFalse(self.client.in_request())
-            self.assertTrue(db.authenticate("mike", "password"))
-            self.assertFalse(self.client.in_request())
-
-            request_cx = get_client(auto_start_request=True)
-            request_db = request_cx.pymongo_test
-            self.assertTrue(request_db.authenticate("mike", "password"))
-            self.assertTrue(request_cx.in_request())
-        finally:
-            db.authenticate("mike", "password")
-            db.remove_user("mike")
-            db.logout()
-            request_db.logout()
-
-    def test_authenticate_multiple(self):
-        client = get_client()
-        if (is_mongos(client) and not
-                version.at_least(self.client, (2, 2, 0))):
-            raise SkipTest("Need mongos >= 2.2.0")
-        if not server_started_with_auth(client):
-            raise SkipTest("Authentication is not enabled on server")
-
-        # Setup
-        users_db = client.pymongo_test
-        admin_db = client.admin
-        other_db = client.pymongo_test1
-        users_db.test.remove()
-        other_db.test.remove()
-
-        admin_db.add_user('admin', 'pass',
-                          roles=["userAdminAnyDatabase", "dbAdmin",
-                                 "clusterAdmin", "readWrite"])
-        try:
-            self.assertTrue(admin_db.authenticate('admin', 'pass'))
-
-            if version.at_least(self.client, (2, 5, 3, -1)):
-                admin_db.add_user('ro-admin', 'pass',
-                                  roles=["userAdmin", "readAnyDatabase"])
-            else:
-                admin_db.add_user('ro-admin', 'pass', read_only=True)
-
-            users_db.add_user('user', 'pass',
-                              roles=["userAdmin", "readWrite"])
-
-            admin_db.logout()
-            self.assertRaises(OperationFailure, users_db.test.find_one)
-
-            # Regular user should be able to query its own db, but
-            # no other.
-            users_db.authenticate('user', 'pass')
-            self.assertEqual(0, users_db.test.count())
-            self.assertRaises(OperationFailure, other_db.test.find_one)
-
-            # Admin read-only user should be able to query any db,
-            # but not write.
-            admin_db.authenticate('ro-admin', 'pass')
-            self.assertEqual(0, other_db.test.count())
-            self.assertRaises(OperationFailure,
-                              other_db.test.insert, {})
-
-            # Force close all sockets
-            client.disconnect()
-
-            # We should still be able to write to the regular user's db
-            self.assertTrue(users_db.test.remove())
-            # And read from other dbs...
-            self.assertEqual(0, other_db.test.count())
-            # But still not write to other dbs...
-            self.assertRaises(OperationFailure,
-                              other_db.test.insert, {})
-
-        # Cleanup
-        finally:
-            admin_db.logout()
-            users_db.logout()
-            admin_db.authenticate('admin', 'pass')
-            remove_all_users(users_db)
-            remove_all_users(admin_db)
 
     def test_id_ordering(self):
         # PyMongo attempts to have _id show up first
@@ -710,6 +399,16 @@ class TestDatabase(unittest.TestCase):
         obj = {"_id": 4}
         db.test.save(obj)
         self.assertEqual(obj, db.dereference(DBRef("test", 4)))
+
+    def test_deref_kwargs(self):
+        db = self.client.pymongo_test
+        db.test.remove({})
+
+        db.test.insert({"_id": 4, "foo": "bar"})
+        self.assertEqual(SON([("foo", "bar")]),
+                         db.dereference(DBRef("test", 4),
+                                        fields={"_id": False},
+                                        as_class=SON))
 
     def test_eval(self):
         db = self.client.pymongo_test
@@ -954,6 +653,47 @@ class TestDatabase(unittest.TestCase):
         else:
             self.fail("_check_command_response didn't raise OperationFailure")
 
+    def test_mongos_response(self):
+        error_document = {
+            'ok': 0,
+            'errmsg': 'outer',
+            'raw': {'shard0/host0,host1': {'ok': 0, 'errmsg': 'inner'}}}
+
+        try:
+            helpers._check_command_response(error_document, reset=None)
+        except OperationFailure, exc:
+            self.assertEqual('inner', str(exc))
+        else:
+            self.fail('OperationFailure not raised')
+
+        # If a shard has no primary and you run a command like dbstats, which
+        # cannot be run on a secondary, mongos's response includes empty "raw"
+        # errors. See SERVER-15428.
+        error_document = {
+            'ok': 0,
+            'errmsg': 'outer',
+            'raw': {'shard0/host0,host1': {}}}
+
+        try:
+            helpers._check_command_response(error_document, reset=None)
+        except OperationFailure, exc:
+            self.assertEqual('outer', str(exc))
+        else:
+            self.fail('OperationFailure not raised')
+
+        # Raw error has ok: 0 but no errmsg. Not a known case, but test it.
+        error_document = {
+            'ok': 0,
+            'errmsg': 'outer',
+            'raw': {'shard0/host0,host1': {'ok': 0}}}
+
+        try:
+            helpers._check_command_response(error_document, reset=None)
+        except OperationFailure, exc:
+            self.assertEqual('outer', str(exc))
+        else:
+            self.fail('OperationFailure not raised')
+
     def test_command_read_pref_warning(self):
         ctx = catch_warnings()
         try:
@@ -1019,7 +759,30 @@ class TestDatabase(unittest.TestCase):
         out = db.test.find_one()
         self.assertEqual('value', out.get('value'))
 
+    def test_son_manipulator_inheritance(self):
+        class Thing(object):
+            def __init__(self, value):
+                self.value = value
 
+        class ThingTransformer(SONManipulator):
+            def transform_incoming(self, thing, collection):
+                return {'value': thing.value}
+
+            def transform_outgoing(self, son, collection):
+                return Thing(son['value'])
+
+        class Child(ThingTransformer):
+            pass
+
+        db = self.client.foo
+        db.add_son_manipulator(Child())
+        t = Thing('value')
+
+        db.test.remove()
+        db.test.insert([t])
+        out = db.test.find_one()
+        self.assertTrue(isinstance(out, Thing))
+        self.assertEqual('value', out.value)
 
 if __name__ == "__main__":
     unittest.main()

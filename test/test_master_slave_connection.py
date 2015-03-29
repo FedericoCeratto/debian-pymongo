@@ -15,7 +15,6 @@
 """Test for master slave connections."""
 
 import datetime
-import os
 import sys
 import threading
 import time
@@ -36,8 +35,14 @@ from pymongo.database import Database
 from pymongo.mongo_client import MongoClient
 from pymongo.collection import Collection
 from pymongo.master_slave_connection import MasterSlaveConnection
-from test import host, port, host2, port2, host3, port3
+from test import (host, port,
+                  host2, port2,
+                  host3, port3,
+                  skip_restricted_localhost)
 from test.utils import TestRequestMixin, catch_warnings, get_pool
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
@@ -61,10 +66,13 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
         if not self.slaves:
             raise SkipTest("Not connected to master-slave set")
 
+        self.ctx = catch_warnings()
+        warnings.simplefilter("ignore", DeprecationWarning)
         self.client = MasterSlaveConnection(self.master, self.slaves)
         self.db = self.client.pymongo_test
 
     def tearDown(self):
+        self.ctx.exit()
         try:
             self.db.test.drop_indexes()
         except Exception:
@@ -333,35 +341,13 @@ class TestMasterSlaveConnection(unittest.TestCase, TestRequestMixin):
         self.assertRaises(OperationFailure,
                           self.db.test.save, {'username': 'mike'})
 
-    # NOTE this test is non-deterministic, but I expect
-    # some failures unless the db is pulling instantaneously...
-    def test_insert_find_one_with_slaves(self):
-        count = 0
-        for i in range(100):
-            self.db.test.remove({})
-            self.db.test.insert({"x": i})
-            try:
-                if i != self.db.test.find_one()["x"]:
-                    count += 1
-            except:
-                count += 1
-        self.assertTrue(count)
-
-    # NOTE this test is non-deterministic, but hopefully we pause long enough
-    # for the slaves to pull...
-    def test_insert_find_one_with_pause(self):
-        count = 0
-
-        self.db.test.remove({})
-        self.db.test.insert({"x": 5586})
-        time.sleep(11)
-        for _ in range(10):
-            try:
-                if 5586 != self.db.test.find_one()["x"]:
-                    count += 1
-            except:
-                count += 1
-        self.assertFalse(count)
+    def test_insert(self):
+        w = len(self.slaves) + 1
+        self.db.test.remove(w=w)
+        self.assertEqual(0, self.db.test.count())
+        doc = {}
+        self.db.test.insert(doc, w=w)
+        self.assertEqual(doc, self.db.test.find_one())
 
     def test_kill_cursor_explicit(self):
         c = self.client

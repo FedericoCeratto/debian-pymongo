@@ -39,7 +39,10 @@ from gridfs.errors import (NoFile,
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from test.test_client import get_client
-from test import qcheck
+from test import qcheck, skip_restricted_localhost
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestGridFile(unittest.TestCase):
@@ -585,6 +588,9 @@ with GridOut(self.db.fs, infile._id) as outfile:
         outfile = GridOut(fs, infile._id, _connect=False)
         outfile.read()
         outfile.filename
+
+        outfile = GridOut(fs, infile._id, _connect=False)
+        outfile.readchunk()
 
     def test_grid_in_lazy_connect(self):
         client = MongoClient('badhost', _connect=False)
