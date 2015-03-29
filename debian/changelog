@@ -1,3 +1,9 @@
+pymongo (2.8-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Federico Ceratto <federico@debian.org>  Sun, 29 Mar 2015 00:09:03 +0000
+
 pymongo (2.7.2-1) unstable; urgency=low
 
   * New upstream release.
