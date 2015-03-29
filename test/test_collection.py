@@ -53,14 +53,16 @@ from pymongo.errors import (DocumentTooLarge,
 from test.test_client import get_client
 from test.utils import (catch_warnings, enable_text_search,
                         get_pool, is_mongos, joinall, oid_generated_on_client)
-from test import (qcheck,
-                  version)
+from test import qcheck, version, skip_restricted_localhost
 
 have_uuid = True
 try:
     import uuid
 except ImportError:
     have_uuid = False
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestCollection(unittest.TestCase):
@@ -120,8 +122,7 @@ class TestCollection(unittest.TestCase):
 
         db.test.drop_indexes()
         db.test.insert({})
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 1)
+        self.assertEqual(len(db.test.index_information()), 1)
 
         db.test.create_index("hello")
         db.test.create_index([("hello", DESCENDING), ("world", ASCENDING)])
@@ -129,10 +130,7 @@ class TestCollection(unittest.TestCase):
         # Tuple instead of list.
         db.test.create_index((("world", ASCENDING),))
 
-        count = 0
-        for _ in db.system.indexes.find({"ns": u"pymongo_test.test"}):
-            count += 1
-        self.assertEqual(count, 4)
+        self.assertEqual(len(db.test.index_information()), 4)
 
         db.test.drop_indexes()
         ix = db.test.create_index([("hello", DESCENDING),
@@ -140,20 +138,14 @@ class TestCollection(unittest.TestCase):
         self.assertEqual(ix, "hello_world")
 
         db.test.drop_indexes()
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 1)
+        self.assertEqual(len(db.test.index_information()), 1)
         db.test.create_index("hello")
-        self.assertTrue(u"hello_1" in
-                        [a["name"] for a in db.system.indexes
-                         .find({"ns": u"pymongo_test.test"})])
+        self.assertTrue(u"hello_1" in db.test.index_information())
 
         db.test.drop_indexes()
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 1)
+        self.assertEqual(len(db.test.index_information()), 1)
         db.test.create_index([("hello", DESCENDING), ("world", ASCENDING)])
-        self.assertTrue(u"hello_-1_world_1" in
-                        [a["name"] for a in db.system.indexes
-                         .find({"ns": u"pymongo_test.test"})])
+        self.assertTrue(u"hello_-1_world_1" in db.test.index_information())
 
         db.test.drop()
         db.test.insert({'a': 1})
@@ -271,49 +263,27 @@ class TestCollection(unittest.TestCase):
         self.assertEqual(10001, coll.count())
         coll.drop()
 
-    def test_index_on_binary(self):
-        db = self.db
-        db.drop_collection("test")
-        db.test.save({"bin": Binary(b("def"))})
-        db.test.save({"bin": Binary(b("abc"))})
-        db.test.save({"bin": Binary(b("ghi"))})
-
-        self.assertEqual(db.test.find({"bin": Binary(b("abc"))})
-                         .explain()["nscanned"], 3)
-
-        db.test.create_index("bin")
-        self.assertEqual(db.test.find({"bin": Binary(b("abc"))})
-                         .explain()["nscanned"], 1)
-
     def test_drop_index(self):
         db = self.db
         db.test.drop_indexes()
         db.test.create_index("hello")
         name = db.test.create_index("goodbye")
 
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 3)
+        self.assertEqual(len(db.test.index_information()), 3)
         self.assertEqual(name, "goodbye_1")
         db.test.drop_index(name)
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 2)
-        self.assertTrue(u"hello_1" in
-                        [a["name"] for a in db.system.indexes
-                         .find({"ns": u"pymongo_test.test"})])
+        self.assertEqual(len(db.test.index_information()), 2)
+        self.assertTrue(u"hello_1" in db.test.index_information())
 
         db.test.drop_indexes()
         db.test.create_index("hello")
         name = db.test.create_index("goodbye")
 
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 3)
         self.assertEqual(name, "goodbye_1")
+        self.assertEqual(len(db.test.index_information()), 3)
         db.test.drop_index([("goodbye", ASCENDING)])
-        self.assertEqual(db.system.indexes.find({"ns": u"pymongo_test.test"})
-                         .count(), 2)
-        self.assertTrue(u"hello_1" in
-                        [a["name"] for a in db.system.indexes
-                         .find({"ns": u"pymongo_test.test"})])
+        self.assertEqual(len(db.test.index_information()), 2)
+        self.assertTrue(u"hello_1" in db.test.index_information())
 
     def test_reindex(self):
         db = self.db
@@ -450,12 +420,19 @@ class TestCollection(unittest.TestCase):
         self.assertEqual("geo_2dsphere",
                          db.test.create_index([("geo", GEOSPHERE)]))
 
+        for name, info in db.test.index_information().items():
+            field, idx_type = info['key'][0]
+            if field == 'geo' and idx_type == '2dsphere':
+                break
+        else:
+            self.fail("2dsphere index not found.")
+
         poly = {"type": "Polygon",
                 "coordinates": [[[40,5], [40,6], [41,6], [41,5], [40,5]]]}
         query = {"geo": {"$within": {"$geometry": poly}}}
 
-        cursor = db.test.find(query).explain()['cursor']
-        self.assertTrue('S2Cursor' in cursor or 'geo_2dsphere' in cursor)
+        # This query will error without a 2dsphere index.
+        db.test.find(query)
 
         db.test.drop_indexes()
 
@@ -468,8 +445,13 @@ class TestCollection(unittest.TestCase):
         self.assertEqual("a_hashed",
                          db.test.create_index([("a", HASHED)]))
 
-        self.assertEqual("BtreeCursor a_hashed",
-                db.test.find({'a': 1}).explain()['cursor'])
+        for name, info in db.test.index_information().items():
+            field, idx_type = info['key'][0]
+            if field == 'a' and idx_type == 'hashed':
+                break
+        else:
+            self.fail("hashed index not found.")
+
         db.test.drop_indexes()
 
     def test_index_sparse(self):
@@ -496,6 +478,8 @@ class TestCollection(unittest.TestCase):
         db.test.insert({'i': 3})
 
     def test_index_drop_dups(self):
+        if version.at_least(self.client, (2, 7)):
+            raise SkipTest("dropDups no longer supported in MongoDB >=2.7.")
         # Try dropping duplicates
         db = self.db
         self._drop_dups_setup(db)
@@ -601,15 +585,6 @@ class TestCollection(unittest.TestCase):
 
     def test_options(self):
         db = self.db
-        db.drop_collection("test")
-        db.test.save({})
-        expected = {}
-        if version.at_least(db.connection, (2, 7, 0)):
-            # usePowerOf2Sizes server default
-            expected["flags"] = 1
-        self.assertEqual(db.test.options(), expected)
-        self.assertEqual(db.test.doesnotexist.options(), {})
-
         db.drop_collection("test")
         if version.at_least(db.connection, (1, 9)):
             db.create_collection("test", capped=True, size=4096)
@@ -973,15 +948,19 @@ class TestCollection(unittest.TestCase):
         db.test.save({"hello": "world"})
         db.test.save({"hello": "mike"})
         db.test.save({"hello": "world"})
-        self.assertFalse(db.error())
 
         db.drop_collection("test")
         db.test.create_index("hello", unique=True)
 
         db.test.save({"hello": "world"})
         db.test.save({"hello": "mike"})
-        db.test.save({"hello": "world"}, w=0)
-        self.assertTrue(db.error())
+
+        self.client.start_request()
+        try:
+            db.test.save({"hello": "world"}, w=0)
+            self.assertTrue(db.command('getlasterror').get('err'))
+        finally:
+            self.client.end_request()
 
     def test_duplicate_key_error(self):
         db = self.db
@@ -1064,11 +1043,11 @@ class TestCollection(unittest.TestCase):
         docs.append({"five": 5})
 
         db.test.insert(docs, manipulate=False, w=0)
-        self.assertEqual(11000, db.error()['code'])
+        self.assertEqual(11000, db.command('getlasterror')['code'])
         self.assertEqual(1, db.test.count())
 
         db.test.insert(docs, manipulate=False, continue_on_error=True, w=0)
-        self.assertEqual(11000, db.error()['code'])
+        self.assertEqual(11000, db.command('getlasterror')['code'])
         self.assertEqual(4, db.test.count())
 
         db.drop_collection("test")
@@ -1078,11 +1057,11 @@ class TestCollection(unittest.TestCase):
         docs[2]["_id"] = oid
 
         db.test.insert(docs, manipulate=False, w=0)
-        self.assertEqual(11000, db.error()['code'])
+        self.assertEqual(11000, db.command('getlasterror')['code'])
         self.assertEqual(3, db.test.count())
 
         db.test.insert(docs, manipulate=False, continue_on_error=True, w=0)
-        self.assertEqual(11000, db.error()['code'])
+        self.assertEqual(11000, db.command('getlasterror')['code'])
         self.assertEqual(6, db.test.count())
 
     def test_error_code(self):
@@ -1120,7 +1099,7 @@ class TestCollection(unittest.TestCase):
         a = {"hello": "world"}
         db.test.insert(a)
         db.test.insert(a, w=0)
-        self.assertTrue("E11000" in db.error()["err"])
+        self.assertTrue("E11000" in db.command('getlasterror')["err"])
 
         self.assertRaises(OperationFailure, db.test.insert, a)
 
@@ -1226,11 +1205,11 @@ class TestCollection(unittest.TestCase):
             None, db.test.update({"_id": id}, {"$inc": {"x": 1}}, w=0))
 
         if v19:
-            self.assertTrue("E11000" in db.error()["err"])
+            self.assertTrue("E11000" in db.command('getlasterror')["err"])
         elif v113minus:
-            self.assertTrue(db.error()["err"].startswith("E11001"))
+            self.assertTrue(db.command('getlasterror')["err"].startswith("E11001"))
         else:
-            self.assertTrue(db.error()["err"].startswith("E12011"))
+            self.assertTrue(db.command('getlasterror')["err"].startswith("E12011"))
 
         self.assertRaises(OperationFailure, db.test.update,
                           {"_id": id}, {"$inc": {"x": 1}})
@@ -1291,7 +1270,7 @@ class TestCollection(unittest.TestCase):
 
         db.test.save({"hello": "world"})
         db.test.save({"hello": "world"}, w=0)
-        self.assertTrue("E11000" in db.error()["err"])
+        self.assertTrue("E11000" in db.command('getlasterror')["err"])
 
         self.assertRaises(OperationFailure, db.test.save,
                           {"hello": "world"})
@@ -1331,18 +1310,31 @@ class TestCollection(unittest.TestCase):
         ismaster = self.client.admin.command("ismaster")
         if ismaster.get("setName"):
             w = len(ismaster["hosts"]) + 1
-            self.assertRaises(WTimeoutError, self.db.test.save,
-                              {"x": 1}, w=w, wtimeout=1)
-            self.assertRaises(WTimeoutError, self.db.test.insert,
-                              {"x": 1}, w=w, wtimeout=1)
-            self.assertRaises(WTimeoutError, self.db.test.update,
-                              {"x": 1}, {"y": 2}, w=w, wtimeout=1)
-            self.assertRaises(WTimeoutError, self.db.test.remove,
-                              {"x": 1}, w=w, wtimeout=1)
+
+            # MongoDB 2.8+ raises error code 100, CannotSatisfyWriteConcern,
+            # if w > number of members. Older versions just time out after 1 ms
+            # as if they had enough secondaries but some are lagging. They
+            # return an error with 'wtimeout': True and no code.
+            def wtimeout_err(f, *args, **kwargs):
+                try:
+                    f(*args, **kwargs)
+                except WTimeoutError:
+                    pass
+                except OperationFailure, exc:
+                    self.assertTrue(exc.code == 100,
+                                    "Unexpected error: %r" % exc)
+                else:
+                    self.fail("%s should have failed" % f)
+
+            coll = self.db.test
+            wtimeout_err(coll.save, {"x": 1}, w=w, wtimeout=1)
+            wtimeout_err(coll.insert, {"x": 1}, w=w, wtimeout=1)
+            wtimeout_err(coll.remove, {"x": 1}, w=w, wtimeout=1)
+            wtimeout_err(coll.update, {"x": 1}, {"y": 2}, w=w, wtimeout=1)
 
             try:
                 self.db.test.save({"x": 1}, w=w, wtimeout=1)
-            except WTimeoutError, exc:
+            except OperationFailure, exc:
                 # Just check that we set the error document. Fields
                 # vary by MongoDB version.
                 self.assertTrue(exc.details is not None)
@@ -2374,6 +2366,43 @@ class TestCollection(unittest.TestCase):
 
         for doc in c.find(compile_re=False):
             self.assertTrue(isinstance(doc['r'], Regex))
+
+    def test_find_and_modify_with_manipulator(self):
+        class AddCollectionNameManipulator(SONManipulator):
+            def will_copy(self):
+                return True
+
+            def transform_incoming(self, son, collection):
+                copy = SON(son)
+                if 'collection' in copy:
+                    del copy['collection']
+                return copy
+
+            def transform_outgoing(self, son, collection):
+                copy = SON(son)
+                copy['collection'] = collection.name
+                return copy
+
+        self.db.add_son_manipulator(AddCollectionNameManipulator())
+
+        c = self.db.test
+        c.drop()
+        c.insert({'_id': 1, 'i': 1})
+
+        # Test correct findAndModify
+        # With manipulators
+        self.assertEqual({'_id': 1, 'i': 1, 'collection': 'test'},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
+                                           manipulate=True))
+        self.assertEqual({'_id': 1, 'i': 3, 'collection': 'test'},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
+                                           new=True, manipulate=True))
+        # With out manipulators
+        self.assertEqual({'_id': 1, 'i': 3},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}}))
+        self.assertEqual({'_id': 1, 'i': 5},
+                         c.find_and_modify({'_id': 1}, {'$inc': {'i': 1}},
+                                           new=True))
 
 
 if __name__ == "__main__":

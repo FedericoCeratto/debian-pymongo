@@ -92,10 +92,8 @@ def server_started_with_auth(client):
         # MongoDB >= 2.6
         if 'security' in parsed:
             security = parsed['security']
-            # >= rc3
             if 'authorization' in security:
                 return security['authorization'] == 'enabled'
-            # < rc3
             return security.get('auth', False) or bool(security.get('keyFile'))
         return parsed.get('auth', False) or bool(parsed.get('keyFile'))
     # Legacy
@@ -493,9 +491,6 @@ class _TestLazyConnectMixin(object):
     """
     use_greenlets = False
 
-    NTRIALS = 5
-    NTHREADS = 10
-
     def test_insert(self):
         def reset(collection):
             collection.drop()
@@ -618,40 +613,6 @@ class _TestExhaustCursorMixin(object):
 
         # The semaphore was decremented despite the error.
         self.assertTrue(pool._socket_semaphore.acquire(blocking=False))
-
-    def test_exhaust_getmore_server_error(self):
-        # When doing a getmore on an exhaust cursor, the socket stays checked
-        # out on success but must be checked in on error to avoid semaphore
-        # leaks.
-        client = self._get_client(max_pool_size=1)
-        if is_mongos(client):
-            raise SkipTest("Can't use exhaust cursors with mongos")
-
-        # A separate client that doesn't affect the test client's pool.
-        client2 = self._get_client()
-
-        collection = client.pymongo_test.test
-        collection.remove()
-
-        # Enough data to ensure it streams down for a few milliseconds.
-        long_str = 'a' * (256 * 1024)
-        collection.insert([{'a': long_str} for _ in range(200)])
-
-        pool = get_pool(client)
-        pool._check_interval_seconds = None  # Never check.
-        sock_info = one(pool.sockets)
-
-        cursor = collection.find(exhaust=True)
-
-        # Initial query succeeds.
-        cursor.next()
-
-        # Cause a server error on getmore.
-        client2.pymongo_test.test.drop()
-        self.assertRaises(OperationFailure, list, cursor)
-
-        # Make sure the socket is still valid
-        self.assertEqual(0, collection.count())
 
     def test_exhaust_query_network_error(self):
         # When doing an exhaust query, the socket stays checked out on success

@@ -31,8 +31,11 @@ from pymongo.errors import ConfigurationError
 
 from test.test_replica_set_client import TestReplicaSetClientBase
 from test.test_client import get_client
-from test import version, utils, host, port
+from test import version, utils, host, port, skip_restricted_localhost
 from test.utils import catch_warnings
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestReadPreferencesBase(TestReplicaSetClientBase):
@@ -315,17 +318,15 @@ class TestCommandAndReadPreference(TestReplicaSetClientBase):
         self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
             ('distinct', 'test'), ('key', 'a'), ('query', {'a': 1})])))
 
-        # Geo stuff. Make sure a 2d index is created and replicated
-        self.c.pymongo_test.system.indexes.insert({
-            'key' : { 'location' : '2d' }, 'ns' : 'pymongo_test.test',
-            'name' : 'location_2d' }, w=self.w)
+        # Geo stuff.
+        self.c.pymongo_test.test.create_index([('location', '2d')])
 
-        self.c.pymongo_test.system.indexes.insert(SON([
-            ('ns', 'pymongo_test.test'),
-            ('key', SON([('location', 'geoHaystack'), ('key', 1)])),
-            ('bucketSize', 100),
-            ('name', 'location_geoHaystack'),
-        ]), w=self.w)
+        self.c.pymongo_test.test.create_index([('location', 'geoHaystack'),
+                                               ('key', 1)], bucketSize=100)
+
+        # Attempt to await replication of indexes replicated.
+        self.c.pymongo_test.test2.insert({}, w=self.w)
+        self.c.pymongo_test.test2.remove({}, w=self.w)
 
         self._test_fn(True, lambda: self.c.pymongo_test.command(
             'geoNear', 'test', near=[0, 0]))
@@ -345,31 +346,6 @@ class TestCommandAndReadPreference(TestReplicaSetClientBase):
                 ('aggregate', 'test'),
                 ('pipeline', [])
             ])))
-
-        # Text search.
-        if version.at_least(self.c, (2, 3, 2)):
-            ctx = catch_warnings()
-            try:
-                warnings.simplefilter("ignore", UserWarning)
-                utils.enable_text_search(self.c)
-            finally:
-                ctx.exit()
-            db = self.c.pymongo_test
-
-            # Only way to create an index and wait for all members to build it.
-            index = {
-                'ns': 'pymongo_test.test',
-                'name': 't_text',
-                'key': {'t': 'text'}}
-
-            db.system.indexes.insert(
-                index, manipulate=False, check_keys=False, w=self.w)
-
-            self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-                ('text', 'test'),
-                ('search', 'foo')])))
-
-            self.c.pymongo_test.test.drop_indexes()
 
     def test_map_reduce_command(self):
         # mapreduce fails if no collection

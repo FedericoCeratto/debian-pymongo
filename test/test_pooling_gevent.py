@@ -23,11 +23,14 @@ from nose.plugins.skip import SkipTest
 
 from pymongo import pool
 from pymongo.errors import ConfigurationError
-from test import host, port
+from test import host, port, skip_restricted_localhost
 from test.utils import looplet
 from test.test_pooling_base import (
     _TestPooling, _TestMaxPoolSize, _TestMaxOpenSockets,
-    _TestPoolSocketSharing, _TestWaitQueueMultiple, has_gevent)
+    _TestWaitQueueMultiple, has_gevent)
+
+
+setUpModule = skip_restricted_localhost
 
 
 class TestPoolingGevent(_TestPooling, unittest.TestCase):
@@ -178,10 +181,6 @@ class TestPoolingGeventSpecial(unittest.TestCase):
 
 
 class TestMaxPoolSizeGevent(_TestMaxPoolSize, unittest.TestCase):
-    use_greenlets = True
-
-
-class TestPoolSocketSharingGevent(_TestPoolSocketSharing, unittest.TestCase):
     use_greenlets = True
 
 

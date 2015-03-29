@@ -1,6 +1,56 @@
 Changelog
 =========
 
+Changes in Version 2.8
+----------------------
+
+Version 2.8 is a major release that provides full support for MongoDB 3.0 and
+fixes a number of bugs.
+
+Special thanks to Don Mitchell, Ximing, Can Zhang, Sergey Azovskov, and Heewa
+Barfchin for their contributions to this release.
+
+Highlights include:
+
+- Support for the SCRAM-SHA-1 authentication mechanism (new in MongoDB 3.0).
+- JSON decoder support for the new $numberLong and $undefined types.
+- JSON decoder support for the $date type as an ISO-8601 string.
+- Support passing an index name to :meth:`~pymongo.cursor.Cursor.hint`.
+- The :meth:`~pymongo.cursor.Cursor.count` method will use a hint if one
+  has been provided through :meth:`~pymongo.cursor.Cursor.hint`.
+- A new socketKeepAlive option for the connection pool.
+- New generator based BSON decode functions, :func:`~bson.decode_iter`
+  and :func:`~bson.decode_file_iter`.
+- Internal changes to support alternative storage engines like wiredtiger.
+
+.. note:: There are a number of deprecations in this release for features that
+  will be removed in PyMongo 3.0. These include:
+
+  - :meth:`~pymongo.mongo_client.MongoClient.start_request`
+  - :meth:`~pymongo.mongo_client.MongoClient.in_request`
+  - :meth:`~pymongo.mongo_client.MongoClient.end_request`
+  - :meth:`~pymongo.mongo_client.MongoClient.copy_database`
+  - :meth:`~pymongo.database.Database.error`
+  - :meth:`~pymongo.database.Database.last_status`
+  - :meth:`~pymongo.database.Database.previous_error`
+  - :meth:`~pymongo.database.Database.reset_error_history`
+  - :class:`~pymongo.master_slave_connection.MasterSlaveConnection`
+
+  The JSON format for :class:`~bson.timestamp.Timestamp` has changed from
+  '{"t": <int>, "i": <int>}' to '{"$timestamp": {"t": <int>, "i": <int>}}'.
+  This new format will be decoded to an instance of
+  :class:`~bson.timestamp.Timestamp`. The old format will continue to be
+  decoded to a python dict as before. Encoding to the old format is no
+  longer supported as it was never correct and loses type information.
+
+Issues Resolved
+...............
+
+See the `PyMongo 2.8 release notes in JIRA`_ for the list of resolved issues
+in this release.
+
+.. _PyMongo 2.8 release notes in JIRA: https://jira.mongodb.org/browse/PYTHON/fixforversion/14223
+
 Changes in Version 2.7.2
 ------------------------
 

@@ -38,6 +38,24 @@ case in our issue management tool, JIRA:
 Bug reports in JIRA for all driver projects (i.e. PYTHON, CSHARP, JAVA) and the
 Core Server (i.e. SERVER) project are **public**.
 
+How To Ask For Help
+-------------------
+
+Please include all of the following information when opening an issue:
+
+- Detailed steps to reproduce the problem, including full traceback, if possible.
+- The exact python version used, with patch level::
+
+  $ python -c "import sys; print(sys.version)"
+
+- The exact version of PyMongo used, with patch level::
+
+  $ python -c "import pymongo; print(pymongo.version); print(pymongo.has_c())"
+
+- The operating system and version (e.g. Windows 7, OSX 10.8, ...)
+- Web framework or asynchronous network library used, if any, with version (e.g.
+  Django 1.7, mod_wsgi 4.3.0, gevent 1.0.1, Tornado 4.0.2, ...)
+
 Security Vulnerabilities
 ------------------------
 
@@ -53,6 +71,10 @@ If you have `setuptools
 should be able to do **easy_install pymongo** to install
 PyMongo. Otherwise you can download the project source and do **python
 setup.py install** to install.
+
+Do **not** install the "bson" package. PyMongo comes with its own bson package;
+doing "easy_install bson" installs a third-party package that is incompatible
+with PyMongo.
 
 Dependencies
 ============

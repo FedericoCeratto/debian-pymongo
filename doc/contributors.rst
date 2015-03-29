@@ -70,3 +70,8 @@ The following is a list of people who have contributed to
 - Kyle Erf (3rf)
 - Luke Lovett (lovett89)
 - Jaroslav Semančík (girogiro)
+- Don Mitchell (dmitchell)
+- Ximing (armnotstrong)
+- Can Zhang (cannium)
+- Sergey Azovskov (last-g)
+- Heewa Barfchin (heewa)

@@ -29,6 +29,7 @@ bson/timestamp.py
 bson/tz_util.py
 doc/__init__.py
 doc/changelog.rst
+doc/compatibility-policy.rst
 doc/conf.py
 doc/contributors.rst
 doc/faq.rst
@@ -75,6 +76,7 @@ doc/api/pymongo/uri_parser.rst
 doc/examples/aggregation.rst
 doc/examples/authentication.rst
 doc/examples/bulk.rst
+doc/examples/copydb.rst
 doc/examples/custom_type.rst
 doc/examples/geo.rst
 doc/examples/gevent.rst

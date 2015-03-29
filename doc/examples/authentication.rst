@@ -5,24 +5,69 @@ MongoDB supports several different authentication mechanisms. These examples
 cover all authentication methods currently supported by PyMongo, documenting
 Python module and MongoDB version dependencies.
 
-MONGODB-CR
-----------
-MONGODB-CR is the default authentication mechanism supported by a MongoDB
-cluster configured for authentication. Authentication is per-database and
-credentials can be specified through the MongoDB URI or passed to the
-:meth:`~pymongo.database.Database.authenticate` method::
+Support For Special Characters In Usernames And Passwords
+---------------------------------------------------------
+
+If your username or password contains special characters (e.g. '/', ' ',
+or '@') you must ``%xx`` escape them for use in the MongoDB URI. PyMongo
+uses :meth:`~urllib.unquote_plus` to decode them. For example::
+
+  >>> import urllib
+  >>> password = urllib.quote_plus('pass/word')
+  >>> password
+  'pass%2Fword'
+  >>> MongoClient('mongodb://user:' + password + '@127.0.0.1')
+  MongoClient('127.0.0.1', 27017)
+
+SCRAM-SHA-1 (RFC 5802)
+----------------------
+.. versionadded:: 2.8
+
+SCRAM-SHA-1 is the default authentication mechanism supported by a cluster
+configured for authentication with MongoDB 3.0 or later. Authentication is
+per-database and credentials can be specified through the MongoDB URI or
+passed to the :meth:`~pymongo.database.Database.authenticate` method::
 
   >>> from pymongo import MongoClient
   >>> client = MongoClient('example.com')
-  >>> client.the_database.authenticate('user', 'password')
+  >>> client.the_database.authenticate('user', 'password', mechanism='SCRAM-SHA-1')
   True
   >>>
-  >>> uri = "mongodb://user:password@example.com/the_database"
+  >>> uri = "mongodb://user:password@example.com/the_database?authMechanism=SCRAM-SHA-1"
   >>> client = MongoClient(uri)
-  >>>
 
-When using MongoDB's delegated authentication features, a separate
-authentication source can be specified (using PyMongo 2.5 or newer)::
+For best performance install `backports.pbkdf2`_, especially on Python older
+than 2.7.8, or on Python 3 before Python 3.4.
+
+.. _backports.pbkdf2: https://pypi.python.org/pypi/backports.pbkdf2/
+
+MONGODB-CR
+----------
+
+Before MongoDB 3.0 the default authentication mechanism was MONGODB-CR,
+the "MongoDB Challenge-Response" protocol::
+
+  >>> from pymongo import MongoClient
+  >>> client = MongoClient('example.com')
+  >>> client.the_database.authenticate('user', 'password', mechanism='MONGODB-CR')
+  True
+  >>>
+  >>> uri = "mongodb://user:password@example.com/the_database?authMechanism=MONGODB-CR"
+  >>> client = MongoClient(uri)
+
+Default Authentication Mechanism
+--------------------------------
+
+If no mechanism is specified, PyMongo automatically uses MONGODB-CR when
+connected to a pre-3.0 version of MongoDB, and SCRAM-SHA-1 when connected to
+a recent version.
+
+Delegated Authentication
+------------------------
+.. versionadded: 2.5
+
+In MongoDB 2.4.x a separate authentication source can be specified.
+This feature was introduced in MongoDB 2.4 and removed in 2.6::
 
   >>> from pymongo import MongoClient
   >>> client = MongoClient('example.com')
@@ -113,15 +158,15 @@ or using :meth:`~pymongo.database.Database.authenticate`::
   True
 
 The default service name used by MongoDB and PyMongo is `mongodb`. You can
-specify a custom service name with the ``gssapiServiceName`` option::
+specify a custom service name with the ``authMechanismProperties`` option::
 
   >>> from pymongo import MongoClient
-  >>> uri = "mongodb://mongodbuser%40EXAMPLE.COM@example.com/?authMechanism=GSSAPI&gssapiServiceName=myservicename"
+  >>> uri = "mongodb://mongodbuser%40EXAMPLE.COM@example.com/?authMechanism=GSSAPI&authMechanismProperties=SERVICE_NAME:myservicename"
   >>> client = MongoClient(uri)
   >>>
   >>> client = MongoClient('example.com')
   >>> db = client.test
-  >>> db.authenticate('mongodbuser@EXAMPLE.COM', mechanism='GSSAPI', gssapiServiceName='myservicename')
+  >>> db.authenticate('mongodbuser@EXAMPLE.COM', mechanism='GSSAPI', authMechanismProperties='SERVICE_NAME:myservicename')
   True
 
 .. note::
@@ -177,4 +222,3 @@ the SASL PLAIN mechanism::
   ...                      ssl_cert_reqs=ssl.CERT_REQUIRED,
   ...                      ssl_ca_certs='/path/to/ca.pem')
   >>>
-
