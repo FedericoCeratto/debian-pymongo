@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2009-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,13 +18,12 @@ import copy
 import pickle
 import re
 import sys
-import unittest
-sys.path[0:0] = [""]
 
-from nose.plugins.skip import SkipTest
+sys.path[0:0] = [""]
 
 from bson.py3compat import b
 from bson.son import SON
+from test import SkipTest, unittest
 
 
 class TestSON(unittest.TestCase):
@@ -33,9 +32,9 @@ class TestSON(unittest.TestCase):
         a1["hello"] = "world"
         a1["mike"] = "awesome"
         a1["hello_"] = "mike"
-        self.assertEqual(a1.items(), [("hello", "world"),
-                                     ("mike", "awesome"),
-                                     ("hello_", "mike")])
+        self.assertEqual(list(a1.items()), [("hello", "world"),
+                                            ("mike", "awesome"),
+                                            ("hello_", "mike")])
 
         b2 = SON({"hello": "world"})
         self.assertEqual(b2["hello"], "world")
@@ -99,7 +98,7 @@ class TestSON(unittest.TestCase):
         complex_son = SON([('son', simple_son),
                            ('list', [simple_son, simple_son])])
 
-        for protocol in xrange(pickle.HIGHEST_PROTOCOL + 1):
+        for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
             pickled = pickle.loads(pickle.dumps(complex_son,
                                                 protocol=protocol))
             self.assertEqual(pickled['son'], pickled['list'][0])
@@ -152,7 +151,7 @@ class TestSON(unittest.TestCase):
         self.assertEqual(complex_son, complex_son1)
 
         reflexive_son1 = copy.deepcopy(reflexive_son)
-        self.assertEqual(reflexive_son.keys(), reflexive_son1.keys())
+        self.assertEqual(list(reflexive_son), list(reflexive_son1))
         self.assertEqual(id(reflexive_son1), id(reflexive_son1["reflexive"]))
 
     def test_iteration(self):
@@ -169,7 +168,7 @@ class TestSON(unittest.TestCase):
         has_key and __contains__
         """
         test_son = SON([(1, 100), (2, 200), (3, 300)])
-        self.assertTrue(1 in test_son)
+        self.assertIn(1, test_son)
         self.assertTrue(2 in test_son, "in failed")
         self.assertFalse(22 in test_son, "in succeeded when it shouldn't")
         self.assertTrue(test_son.has_key(2), "has_key failed")
@@ -181,7 +180,7 @@ class TestSON(unittest.TestCase):
         """
         test_son = SON([(1, 100), (2, 200), (3, 300)])
         test_son.clear()
-        self.assertFalse(1 in test_son)
+        self.assertNotIn(1, test_son)
         self.assertEqual(0, len(test_son))
         self.assertEqual(0, len(test_son.keys()))
         self.assertEqual({}, test_son.to_dict())

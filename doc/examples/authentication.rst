@@ -113,12 +113,6 @@ do not have to specify a database in the URI::
   ...                     ssl_ca_certs='/path/to/ca.pem')
   >>>
 
-.. note::
-   If you are using CPython 2.4 or 2.5 you must install the python
-   `ssl module`_ using easy_install or pip.
-
-.. _ssl module: https://pypi.python.org/pypi/ssl/
-
 .. _use_kerberos:
 
 GSSAPI (Kerberos)
@@ -166,7 +160,9 @@ specify a custom service name with the ``authMechanismProperties`` option::
   >>>
   >>> client = MongoClient('example.com')
   >>> db = client.test
-  >>> db.authenticate('mongodbuser@EXAMPLE.COM', mechanism='GSSAPI', authMechanismProperties='SERVICE_NAME:myservicename')
+  >>> db.authenticate(
+  ...     'mongodbuser@EXAMPLE.COM', mechanism='GSSAPI',
+  ...     authMechanismProperties='SERVICE_NAME:myservicename')
   True
 
 .. note::
@@ -222,3 +218,4 @@ the SASL PLAIN mechanism::
   ...                      ssl_cert_reqs=ssl.CERT_REQUIRED,
   ...                      ssl_ca_certs='/path/to/ca.pem')
   >>>
+

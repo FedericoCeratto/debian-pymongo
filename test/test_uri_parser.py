@@ -1,4 +1,4 @@
-# Copyright 2011-2014 MongoDB, Inc.
+# Copyright 2011-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 """Test the pymongo uri_parser module."""
 
 import copy
-import unittest
 import sys
 
 sys.path[0:0] = [""]
@@ -29,6 +28,8 @@ from pymongo.uri_parser import (_partition,
 from pymongo.errors import ConfigurationError, InvalidURI
 from pymongo import ReadPreference
 from bson.binary import JAVA_LEGACY
+from bson.py3compat import string_type, _unicode
+from test import unittest
 
 
 class TestURI(unittest.TestCase):
@@ -78,16 +79,16 @@ class TestURI(unittest.TestCase):
                          split_hosts('/tmp/mongodb-27017.sock'))
         self.assertEqual([('/tmp/mongodb-27017.sock', None),
                           ('example.com', 27017)],
-                        split_hosts('/tmp/mongodb-27017.sock,'
-                                    'example.com:27017'))
+                         split_hosts('/tmp/mongodb-27017.sock,'
+                                     'example.com:27017'))
         self.assertEqual([('example.com', 27017),
                           ('/tmp/mongodb-27017.sock', None)],
-                        split_hosts('example.com:27017,'
-                                    '/tmp/mongodb-27017.sock'))
-        self.assertRaises(ConfigurationError, split_hosts, '::1', 27017)
-        self.assertRaises(ConfigurationError, split_hosts, '[::1:27017')
-        self.assertRaises(ConfigurationError, split_hosts, '::1')
-        self.assertRaises(ConfigurationError, split_hosts, '::1]:27017')
+                         split_hosts('example.com:27017,'
+                                     '/tmp/mongodb-27017.sock'))
+        self.assertRaises(ValueError, split_hosts, '::1', 27017)
+        self.assertRaises(ValueError, split_hosts, '[::1:27017')
+        self.assertRaises(ValueError, split_hosts, '::1')
+        self.assertRaises(ValueError, split_hosts, '::1]:27017')
         self.assertEqual([('::1', 27017)], split_hosts('[::1]:27017'))
         self.assertEqual([('::1', 27017)], split_hosts('[::1]'))
 
@@ -95,19 +96,19 @@ class TestURI(unittest.TestCase):
         self.assertRaises(ConfigurationError, split_options, 'foo')
         self.assertRaises(ConfigurationError, split_options, 'foo=bar')
         self.assertRaises(ConfigurationError, split_options, 'foo=bar;foo')
-        self.assertRaises(ConfigurationError, split_options, 'socketTimeoutMS=foo')
-        self.assertRaises(ConfigurationError, split_options, 'socketTimeoutMS=0.0')
-        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=foo')
-        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=0.0')
-        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=1e100000')
-        self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=-1e100000')
+        self.assertRaises(ValueError, split_options, 'socketTimeoutMS=foo')
+        self.assertRaises(ValueError, split_options, 'socketTimeoutMS=0.0')
+        self.assertRaises(ValueError, split_options, 'connectTimeoutMS=foo')
+        self.assertRaises(ValueError, split_options, 'connectTimeoutMS=0.0')
+        self.assertRaises(ValueError, split_options, 'connectTimeoutMS=1e100000')
+        self.assertRaises(ValueError, split_options, 'connectTimeoutMS=-1e100000')
 
         # On most platforms float('inf') and float('-inf') represent
         # +/- infinity, although on Python 2.4 and 2.5 on Windows those
         # expressions are invalid
         if not (sys.platform == "win32" and sys.version_info <= (2, 5)):
-            self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=inf')
-            self.assertRaises(ConfigurationError, split_options, 'connectTimeoutMS=-inf')
+            self.assertRaises(ValueError, split_options, 'connectTimeoutMS=inf')
+            self.assertRaises(ValueError, split_options, 'connectTimeoutMS=-inf')
 
         self.assertTrue(split_options('socketTimeoutMS=300'))
         self.assertTrue(split_options('connectTimeoutMS=300'))
@@ -117,14 +118,14 @@ class TestURI(unittest.TestCase):
         self.assertEqual({'connecttimeoutms': 0.0001}, split_options('connectTimeoutMS=0.1'))
         self.assertTrue(split_options('connectTimeoutMS=300'))
         self.assertTrue(isinstance(split_options('w=5')['w'], int))
-        self.assertTrue(isinstance(split_options('w=5.5')['w'], basestring))
+        self.assertTrue(isinstance(split_options('w=5.5')['w'], string_type))
         self.assertTrue(split_options('w=foo'))
         self.assertTrue(split_options('w=majority'))
-        self.assertRaises(ConfigurationError, split_options, 'wtimeoutms=foo')
-        self.assertRaises(ConfigurationError, split_options, 'wtimeoutms=5.5')
+        self.assertRaises(ValueError, split_options, 'wtimeoutms=foo')
+        self.assertRaises(ValueError, split_options, 'wtimeoutms=5.5')
         self.assertTrue(split_options('wtimeoutms=500'))
-        self.assertRaises(ConfigurationError, split_options, 'fsync=foo')
-        self.assertRaises(ConfigurationError, split_options, 'fsync=5.5')
+        self.assertRaises(ValueError, split_options, 'fsync=foo')
+        self.assertRaises(ValueError, split_options, 'fsync=5.5')
         self.assertEqual({'fsync': True}, split_options('fsync=true'))
         self.assertEqual({'fsync': False}, split_options('fsync=false'))
         self.assertEqual({'authmechanism': 'GSSAPI'},
@@ -133,16 +134,15 @@ class TestURI(unittest.TestCase):
                          split_options('authMechanism=MONGODB-CR'))
         self.assertEqual({'authmechanism': 'SCRAM-SHA-1'},
                          split_options('authMechanism=SCRAM-SHA-1'))
-        self.assertRaises(ConfigurationError,
+        self.assertRaises(ValueError,
                           split_options, 'authMechanism=foo')
         self.assertEqual({'authsource': 'foobar'}, split_options('authSource=foobar'))
-        # maxPoolSize isn't yet a documented URI option.
-        self.assertRaises(ConfigurationError, split_options, 'maxpoolsize=50')
+        self.assertEqual({'maxpoolsize': 50}, split_options('maxpoolsize=50'))
 
     def test_parse_uri(self):
         self.assertRaises(InvalidURI, parse_uri, "http://foobar.com")
         self.assertRaises(InvalidURI, parse_uri, "http://foo@foobar.com")
-        self.assertRaises(ConfigurationError,
+        self.assertRaises(ValueError,
                           parse_uri, "mongodb://::1", 27017)
 
         orig = {
@@ -199,18 +199,6 @@ class TestURI(unittest.TestCase):
         self.assertEqual(res,
                          parse_uri("mongodb://example1.com:27017,example2.com"
                                    ":27017/test.yield_historical.in"))
-
-        res = copy.deepcopy(orig)
-        res['nodelist'] = [("::1", 27017)]
-        res['options'] = {'slaveok': True}
-        self.assertEqual(res, parse_uri("mongodb://[::1]:27017/?slaveOk=true"))
-
-        res = copy.deepcopy(orig)
-        res['nodelist'] = [("2001:0db8:85a3:0000:0000:8a2e:0370:7334", 27017)]
-        res['options'] = {'slaveok': True}
-        self.assertEqual(res, parse_uri(
-                              "mongodb://[2001:0db8:85a3:0000:0000"
-                              ":8a2e:0370:7334]:27017/?slaveOk=true"))
 
         res = copy.deepcopy(orig)
         res['nodelist'] = [("/tmp/mongodb-27017.sock", None)]
@@ -278,13 +266,12 @@ class TestURI(unittest.TestCase):
         res = copy.deepcopy(orig)
         res.update({'username': 'fred', 'password': 'foobar'})
         res.update({'database': 'test', 'collection': 'yield_historical.in'})
-        res['options'] = {'slaveok': True}
         self.assertEqual(res,
                          parse_uri("mongodb://fred:foobar@localhost/"
-                                   "test.yield_historical.in?slaveok=true"))
+                                   "test.yield_historical.in"))
 
         res = copy.deepcopy(orig)
-        res['options'] = {'readpreference': ReadPreference.SECONDARY}
+        res['options'] = {'readpreference': ReadPreference.SECONDARY.mode}
         self.assertEqual(res,
                          parse_uri("mongodb://localhost/?readPreference=secondary"))
 
@@ -341,7 +328,7 @@ class TestURI(unittest.TestCase):
                                    "@localhost/foo?authMechanism=GSSAPI"))
 
         res = copy.deepcopy(orig)
-        res['options'] = {'readpreference': ReadPreference.SECONDARY,
+        res['options'] = {'readpreference': ReadPreference.SECONDARY.mode,
                           'readpreferencetags': [
                               {'dc': 'west', 'use': 'website'},
                               {'dc': 'east', 'use': 'website'}]}
@@ -355,7 +342,7 @@ class TestURI(unittest.TestCase):
                                    "readpreferencetags=dc:east,use:website"))
 
         res = copy.deepcopy(orig)
-        res['options'] = {'readpreference': ReadPreference.SECONDARY,
+        res['options'] = {'readpreference': ReadPreference.SECONDARY.mode,
                           'readpreferencetags': [
                               {'dc': 'west', 'use': 'website'},
                               {'dc': 'east', 'use': 'website'},
@@ -380,7 +367,7 @@ class TestURI(unittest.TestCase):
                                    "@localhost/foo?uuidrepresentation="
                                    "javaLegacy"))
 
-        self.assertRaises(ConfigurationError, parse_uri,
+        self.assertRaises(ValueError, parse_uri,
                           "mongodb://user%40domain.com:password"
                           "@localhost/foo?uuidrepresentation=notAnOption")
 
@@ -388,7 +375,7 @@ class TestURI(unittest.TestCase):
         # Ensure parsing a unicode returns option names that can be passed
         # as kwargs. In Python 2.4, keyword argument names must be ASCII.
         # In all Pythons, str is the type of valid keyword arg names.
-        res = parse_uri(unicode("mongodb://localhost/?fsync=true"))
+        res = parse_uri(_unicode("mongodb://localhost/?fsync=true"))
         for key in res['options']:
             self.assertTrue(isinstance(key, str))
 

@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2009-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,15 +18,13 @@ MongoDB.
 
 .. note:: This module is for internal use and is generally not needed by
    application developers.
-
-.. versionadded:: 1.1.2
 """
 
 import random
 import struct
 
 import bson
-from bson.binary import OLD_UUID_SUBTYPE
+from bson.codec_options import DEFAULT_CODEC_OPTIONS
 from bson.py3compat import b, StringIO
 from bson.son import SON
 try:
@@ -35,6 +33,7 @@ try:
 except ImportError:
     _use_c = False
 from pymongo.errors import DocumentTooLarge, InvalidOperation, OperationFailure
+from pymongo.read_preferences import ReadPreference
 
 
 MAX_INT32 = 2147483647
@@ -44,18 +43,83 @@ _INSERT = 0
 _UPDATE = 1
 _DELETE = 2
 
-_EMPTY   = b('')
-_BSONOBJ = b('\x03')
-_ZERO_8  = b('\x00')
-_ZERO_16 = b('\x00\x00')
-_ZERO_32 = b('\x00\x00\x00\x00')
-_ZERO_64 = b('\x00\x00\x00\x00\x00\x00\x00\x00')
-_SKIPLIM = b('\x00\x00\x00\x00\xff\xff\xff\xff')
+_EMPTY   = b''
+_BSONOBJ = b'\x03'
+_ZERO_8  = b'\x00'
+_ZERO_16 = b'\x00\x00'
+_ZERO_32 = b'\x00\x00\x00\x00'
+_ZERO_64 = b'\x00\x00\x00\x00\x00\x00\x00\x00'
+_SKIPLIM = b'\x00\x00\x00\x00\xff\xff\xff\xff'
 _OP_MAP = {
-    _INSERT: b('\x04documents\x00\x00\x00\x00\x00'),
-    _UPDATE: b('\x04updates\x00\x00\x00\x00\x00'),
-    _DELETE: b('\x04deletes\x00\x00\x00\x00\x00'),
+    _INSERT: b'\x04documents\x00\x00\x00\x00\x00',
+    _UPDATE: b'\x04updates\x00\x00\x00\x00\x00',
+    _DELETE: b'\x04deletes\x00\x00\x00\x00\x00',
 }
+
+
+def _maybe_add_read_preference(spec, read_preference):
+    """Add $readPreference to spec when appropriate."""
+    mode = read_preference.mode
+    tag_sets = read_preference.tag_sets
+    # Only add $readPreference if it's something other than primary to avoid
+    # problems with mongos versions that don't support read preferences. Also,
+    # for maximum backwards compatibility, don't add $readPreference for
+    # secondaryPreferred unless tags are in use (setting the slaveOkay bit
+    # has the same effect).
+    if mode and (
+        mode != ReadPreference.SECONDARY_PREFERRED.mode or tag_sets != [{}]):
+
+        if "$query" not in spec:
+            spec = SON([("$query", spec)])
+        spec["$readPreference"] = read_preference.document
+    return spec
+
+
+class _Query(object):
+    """A query operation."""
+
+    __slots__ = ('flags', 'ns', 'ntoskip', 'ntoreturn',
+                 'spec', 'fields', 'codec_options', 'read_preference')
+
+    def __init__(self, flags, ns, ntoskip, ntoreturn,
+                 spec, fields, codec_options, read_preference):
+        self.flags = flags
+        self.ns = ns
+        self.ntoskip = ntoskip
+        self.ntoreturn = ntoreturn
+        self.spec = spec
+        self.fields = fields
+        self.codec_options = codec_options
+        self.read_preference = read_preference
+
+    def get_message(self, set_slave_ok, is_mongos):
+        """Get a query message, possibly setting the slaveOk bit."""
+        if is_mongos:
+            spec = _maybe_add_read_preference(self.spec, self.read_preference)
+        else:
+            spec = self.spec
+        if set_slave_ok:
+            # Set the slaveOk bit.
+            flags = self.flags | 4
+        else:
+            flags = self.flags
+        return query(flags, self.ns, self.ntoskip,
+                     self.ntoreturn, spec, self.fields, self.codec_options)
+
+
+class _GetMore(object):
+    """A getmore operation."""
+
+    __slots__ = ('ns', 'ntoreturn', 'cursor_id')
+
+    def __init__(self, ns, ntoreturn, cursor_id):
+        self.ns = ns
+        self.ntoreturn = ntoreturn
+        self.cursor_id = cursor_id
+
+    def get_message(self, dummy0, dummy1):
+        """Get a getmore message."""
+        return get_more(self.ns, self.ntoreturn, self.cursor_id)
 
 
 def __last_error(namespace, args):
@@ -64,7 +128,8 @@ def __last_error(namespace, args):
     cmd = SON([("getlasterror", 1)])
     cmd.update(args)
     splitns = namespace.split('.', 1)
-    return query(0, splitns[0] + '.$cmd', 0, -1, cmd)
+    return query(0, splitns[0] + '.$cmd', 0, -1, cmd,
+                 None, DEFAULT_CODEC_OPTIONS)
 
 
 def __pack_message(operation, data):
@@ -81,21 +146,18 @@ def __pack_message(operation, data):
 
 
 def insert(collection_name, docs, check_keys,
-           safe, last_error_args, continue_on_error, uuid_subtype):
+           safe, last_error_args, continue_on_error, opts):
     """Get an **insert** message.
 
-    .. note:: As of PyMongo 2.6, this function is no longer used. It
-       is being kept (with tests) for backwards compatibility with 3rd
-       party libraries that may currently be using it, but will likely
-       be removed in a future release.
-
+    Used by the Bulk API to insert into pre-2.6 servers. Collection.insert
+    uses _do_batched_insert.
     """
     options = 0
     if continue_on_error:
         options += 1
     data = struct.pack("<i", options)
     data += bson._make_c_string(collection_name)
-    encoded = [bson.BSON.encode(doc, check_keys, uuid_subtype) for doc in docs]
+    encoded = [bson.BSON.encode(doc, check_keys, opts) for doc in docs]
     if not encoded:
         raise InvalidOperation("cannot do an empty bulk insert")
     max_bson_size = max(map(len, encoded))
@@ -113,7 +175,7 @@ if _use_c:
 
 
 def update(collection_name, upsert, multi,
-           spec, doc, safe, last_error_args, check_keys, uuid_subtype):
+           spec, doc, safe, last_error_args, check_keys, opts):
     """Get an **update** message.
     """
     options = 0
@@ -125,8 +187,8 @@ def update(collection_name, upsert, multi,
     data = _ZERO_32
     data += bson._make_c_string(collection_name)
     data += struct.pack("<i", options)
-    data += bson.BSON.encode(spec, False, uuid_subtype)
-    encoded = bson.BSON.encode(doc, check_keys, uuid_subtype)
+    data += bson.BSON.encode(spec, False, opts)
+    encoded = bson.BSON.encode(doc, check_keys, opts)
     data += encoded
     if safe:
         (_, update_message) = __pack_message(2001, data)
@@ -141,19 +203,18 @@ if _use_c:
 
 
 def query(options, collection_name, num_to_skip,
-          num_to_return, query, field_selector=None,
-          uuid_subtype=OLD_UUID_SUBTYPE):
+          num_to_return, query, field_selector, opts):
     """Get a **query** message.
     """
     data = struct.pack("<I", options)
     data += bson._make_c_string(collection_name)
     data += struct.pack("<i", num_to_skip)
     data += struct.pack("<i", num_to_return)
-    encoded = bson.BSON.encode(query, False, uuid_subtype)
+    encoded = bson.BSON.encode(query, False, opts)
     data += encoded
     max_bson_size = len(encoded)
     if field_selector is not None:
-        encoded = bson.BSON.encode(field_selector, False, uuid_subtype)
+        encoded = bson.BSON.encode(field_selector, False, opts)
         data += encoded
         max_bson_size = max(len(encoded), max_bson_size)
     (request_id, query_message) = __pack_message(2004, data)
@@ -175,13 +236,18 @@ if _use_c:
 
 
 def delete(collection_name, spec, safe,
-           last_error_args, uuid_subtype, options=0):
+           last_error_args, opts, flags=0):
     """Get a **delete** message.
+
+    `opts` is a CodecOptions. `flags` is a bit vector that may contain
+    the SingleRemove flag or not:
+
+    http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-delete
     """
     data = _ZERO_32
     data += bson._make_c_string(collection_name)
-    data += struct.pack("<I", options)
-    encoded = bson.BSON.encode(spec, False, uuid_subtype)
+    data += struct.pack("<I", flags)
+    encoded = bson.BSON.encode(spec, False, opts)
     data += encoded
     if safe:
         (_, remove_message) = __pack_message(2006, data)
@@ -204,7 +270,8 @@ def kill_cursors(cursor_ids):
 
 
 def _do_batched_insert(collection_name, docs, check_keys,
-           safe, last_error_args, continue_on_error, uuid_subtype, client):
+                       safe, last_error_args, continue_on_error, opts,
+                       sock_info):
     """Insert `docs` using multiple batches.
     """
     def _insert_message(insert_message, send_safe):
@@ -225,12 +292,12 @@ def _do_batched_insert(collection_name, docs, check_keys,
     message_length = begin_loc = data.tell()
     has_docs = False
     for doc in docs:
-        encoded = bson.BSON.encode(doc, check_keys, uuid_subtype)
+        encoded = bson.BSON.encode(doc, check_keys, opts)
         encoded_length = len(encoded)
-        too_large = (encoded_length > client.max_bson_size)
+        too_large = (encoded_length > sock_info.max_bson_size)
 
         message_length += encoded_length
-        if message_length < client.max_message_size and not too_large:
+        if message_length < sock_info.max_message_size and not too_large:
             data.write(encoded)
             has_docs = True
             continue
@@ -238,11 +305,11 @@ def _do_batched_insert(collection_name, docs, check_keys,
         if has_docs:
             # We have enough data, send this message.
             try:
-                client._send_message(_insert_message(data.getvalue(),
-                                                     send_safe), send_safe)
+                request_id, msg = _insert_message(data.getvalue(), send_safe)
+                sock_info.legacy_write(request_id, msg, 0, send_safe)
             # Exception type could be OperationFailure or a subtype
             # (e.g. DuplicateKeyError)
-            except OperationFailure, exc:
+            except OperationFailure as exc:
                 # Like it says, continue on error...
                 if continue_on_error:
                     # Store exception details to re-raise after the final batch.
@@ -259,7 +326,7 @@ def _do_batched_insert(collection_name, docs, check_keys,
                                    " - the connected server supports"
                                    " BSON document sizes up to %d"
                                    " bytes." %
-                                   (encoded_length, client.max_bson_size))
+                                   (encoded_length, sock_info.max_bson_size))
 
         message_length = begin_loc + encoded_length
         data.seek(begin_loc)
@@ -269,7 +336,8 @@ def _do_batched_insert(collection_name, docs, check_keys,
     if not has_docs:
         raise InvalidOperation("cannot do an empty bulk insert")
 
-    client._send_message(_insert_message(data.getvalue(), safe), safe)
+    request_id, msg = _insert_message(data.getvalue(), safe)
+    sock_info.legacy_write(request_id, msg, 0, safe)
 
     # Re-raise any exception stored due to continue_on_error
     if last_error is not None:
@@ -279,13 +347,13 @@ if _use_c:
 
 
 def _do_batched_write_command(namespace, operation, command,
-                              docs, check_keys, uuid_subtype, client):
+                              docs, check_keys, opts, sock_info):
     """Execute a batch of insert, update, or delete commands.
     """
-    max_bson_size = client.max_bson_size
-    max_write_batch_size = client.max_write_batch_size
-    # Max BSON object size + 16k - 2 bytes for ending NUL bytes
-    # XXX: This should come from the server - SERVER-10643
+    max_bson_size = sock_info.max_bson_size
+    max_write_batch_size = sock_info.max_write_batch_size
+    # Max BSON object size + 16k - 2 bytes for ending NUL bytes.
+    # Server guarantees there is enough room: SERVER-10643.
     max_cmd_size = max_bson_size + 16382
 
     ordered = command.get('ordered', True)
@@ -294,7 +362,7 @@ def _do_batched_write_command(namespace, operation, command,
     # Save space for message length and request id
     buf.write(_ZERO_64)
     # responseTo, opCode
-    buf.write(b("\x00\x00\x00\x00\xd4\x07\x00\x00"))
+    buf.write(b"\x00\x00\x00\x00\xd4\x07\x00\x00")
     # No options
     buf.write(_ZERO_32)
     # Namespace as C string
@@ -339,10 +407,7 @@ def _do_batched_write_command(namespace, operation, command,
         buf.write(struct.pack('<i', request_id))
         buf.seek(0)
         buf.write(struct.pack('<i', length))
-
-        return client._send_message((request_id, buf.getvalue()),
-                                    with_last_error=True,
-                                    command=True)
+        return sock_info.write_command(request_id, buf.getvalue())
 
     # If there are multiple batches we'll
     # merge results in the caller.
@@ -355,7 +420,7 @@ def _do_batched_write_command(namespace, operation, command,
         has_docs = True
         # Encode the current operation
         key = b(str(idx))
-        value = bson.BSON.encode(doc, check_keys, uuid_subtype)
+        value = bson.BSON.encode(doc, check_keys, opts)
         # Send a batch?
         enough_data = (buf.tell() + len(key) + len(value) + 2) >= max_cmd_size
         enough_documents = (idx >= max_write_batch_size)
@@ -380,7 +445,7 @@ def _do_batched_write_command(namespace, operation, command,
             buf.truncate()
             idx_offset += idx
             idx = 0
-            key = b('0')
+            key = b'0'
         buf.write(_BSONOBJ)
         buf.write(key)
         buf.write(_ZERO_8)

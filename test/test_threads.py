@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2009-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,19 +14,21 @@
 
 """Test that pymongo is thread safe."""
 
-import unittest
 import threading
-import traceback
 
-from test import skip_restricted_localhost
-from test.utils import joinall, RendezvousThread
-from test.test_client import get_client
-from test.utils import get_pool
-from pymongo.pool import SocketInfo, _closed
-from pymongo.errors import AutoReconnect
+from test import (client_context,
+                  db_user,
+                  db_pwd,
+                  IntegrationTest,
+                  unittest)
+from test.utils import rs_or_single_client_noauth
+from test.utils import frequent_thread_switches, joinall
+from pymongo.errors import OperationFailure
 
 
-setUpModule = skip_restricted_localhost
+@client_context.require_connection
+def setUpModule():
+    pass
 
 
 class AutoAuthenticateThreads(threading.Thread):
@@ -35,17 +37,15 @@ class AutoAuthenticateThreads(threading.Thread):
         threading.Thread.__init__(self)
         self.coll = collection
         self.num = num
-        self.success = True
+        self.success = False
         self.setDaemon(True)
 
     def run(self):
-        try:
-            for i in xrange(self.num):
-                self.coll.insert({'num':i})
-                self.coll.find_one({'num':i})
-        except Exception:
-            traceback.print_exc()
-            self.success = False
+        for i in range(self.num):
+            self.coll.insert_one({'num': i})
+            self.coll.find_one({'num': i})
+
+        self.success = True
 
 
 class SaveAndFind(threading.Thread):
@@ -54,12 +54,15 @@ class SaveAndFind(threading.Thread):
         threading.Thread.__init__(self)
         self.collection = collection
         self.setDaemon(True)
+        self.passed = False
 
     def run(self):
         sum = 0
         for document in self.collection.find():
             sum += document["x"]
+
         assert sum == 499500, "sum was %d not 499500" % sum
+        self.passed = True
 
 
 class Insert(threading.Thread):
@@ -72,11 +75,11 @@ class Insert(threading.Thread):
         self.setDaemon(True)
 
     def run(self):
-        for _ in xrange(self.n):
+        for _ in range(self.n):
             error = True
 
             try:
-                self.collection.insert({"test": "insert"})
+                self.collection.insert_one({"test": "insert"})
                 error = False
             except:
                 if not self.expect_exception:
@@ -96,12 +99,12 @@ class Update(threading.Thread):
         self.setDaemon(True)
 
     def run(self):
-        for _ in xrange(self.n):
+        for _ in range(self.n):
             error = True
 
             try:
-                self.collection.update({"test": "unique"},
-                                       {"$set": {"test": "update"}})
+                self.collection.update_one({"test": "unique"},
+                                           {"$set": {"test": "update"}})
                 error = False
             except:
                 if not self.expect_exception:
@@ -111,83 +114,28 @@ class Update(threading.Thread):
                 assert error
 
 
-class IgnoreAutoReconnect(threading.Thread):
+class Disconnect(threading.Thread):
 
-    def __init__(self, collection, n):
+    def __init__(self, client, n):
         threading.Thread.__init__(self)
-        self.c = collection
+        self.client = client
         self.n = n
-        self.setDaemon(True)
+        self.passed = False
 
     def run(self):
         for _ in range(self.n):
-            try:
-                self.c.find_one()
-            except AutoReconnect:
-                pass
+            self.client.close()
+
+        self.passed = True
 
 
-class FindPauseFind(RendezvousThread):
-    """See test_server_disconnect() for details"""
-    def __init__(self, collection, state):
-        """Params:
-          `collection`: A collection for testing
-          `state`: A shared state object from RendezvousThread.shared_state()
-        """
-        super(FindPauseFind, self).__init__(state)
-        self.collection = collection
-
-    def before_rendezvous(self):
-        # acquire a socket
-        list(self.collection.find())
-
-        pool = get_pool(self.collection.database.connection)
-        socket_info = pool._get_request_state()
-        assert isinstance(socket_info, SocketInfo)
-        self.request_sock = socket_info.sock
-        assert not _closed(self.request_sock)
-
-    def after_rendezvous(self):
-        # test_server_disconnect() has closed this socket, but that's ok
-        # because it's not our request socket anymore
-        assert _closed(self.request_sock)
-
-        # if disconnect() properly replaced the pool, then this won't raise
-        # AutoReconnect because it will acquire a new socket
-        list(self.collection.find())
-        assert self.collection.database.connection.in_request()
-        pool = get_pool(self.collection.database.connection)
-        assert self.request_sock != pool._get_request_state().sock
-
-
-class BaseTestThreads(object):
-    """
-    Base test class for TestThreads and TestThreadsReplicaSet. (This is not
-    itself a unittest.TestCase, otherwise it'd be run twice -- once when nose
-    imports this module, and once when nose imports
-    test_threads_replica_set_connection.py, which imports this module.)
-    """
+class TestThreads(IntegrationTest):
     def setUp(self):
-        self.db = self._get_client().pymongo_test
-
-    def tearDown(self):
-        # Clear client reference so that RSC's monitor thread
-        # dies.
-        self.db = None
-
-    def _get_client(self):
-        """
-        Intended for overriding in TestThreadsReplicaSet. This method
-        returns a MongoClient here, and a MongoReplicaSetClient in
-        test_threads_replica_set_connection.py.
-        """
-        # Regular test client
-        return get_client()
+        self.db = client_context.rs_or_standalone_client.pymongo_test
 
     def test_threading(self):
         self.db.drop_collection("test")
-        for i in xrange(1000):
-            self.db.test.save({"x": i})
+        self.db.test.insert_many([{"x": i} for i in range(1000)])
 
         threads = []
         for i in range(10):
@@ -199,9 +147,9 @@ class BaseTestThreads(object):
 
     def test_safe_insert(self):
         self.db.drop_collection("test1")
-        self.db.test1.insert({"test": "insert"})
+        self.db.test1.insert_one({"test": "insert"})
         self.db.drop_collection("test2")
-        self.db.test2.insert({"test": "insert"})
+        self.db.test2.insert_one({"test": "insert"})
 
         self.db.test2.create_index("test", unique=True)
         self.db.test2.find_one()
@@ -217,11 +165,11 @@ class BaseTestThreads(object):
 
     def test_safe_update(self):
         self.db.drop_collection("test1")
-        self.db.test1.insert({"test": "update"})
-        self.db.test1.insert({"test": "unique"})
+        self.db.test1.insert_one({"test": "update"})
+        self.db.test1.insert_one({"test": "unique"})
         self.db.drop_collection("test2")
-        self.db.test2.insert({"test": "update"})
-        self.db.test2.insert({"test": "unique"})
+        self.db.test2.insert_one({"test": "update"})
+        self.db.test2.insert_one({"test": "unique"})
 
         self.db.test2.create_index("test", unique=True)
         self.db.test2.find_one()
@@ -235,73 +183,53 @@ class BaseTestThreads(object):
         error.join()
         okay.join()
 
-    def test_server_disconnect(self):
-        # PYTHON-345, we need to make sure that threads' request sockets are
-        # closed by disconnect().
-        #
-        # 1. Create a client with auto_start_request=True
-        # 2. Start N threads and do a find() in each to get a request socket
-        # 3. Pause all threads
-        # 4. In the main thread close all sockets, including threads' request
-        #       sockets
-        # 5. In main thread, do a find(), which raises AutoReconnect and resets
-        #       pool
-        # 6. Resume all threads, do a find() in them
-        #
-        # If we've fixed PYTHON-345, then only one AutoReconnect is raised,
-        # and all the threads get new request sockets.
-        cx = get_client(auto_start_request=True)
-        collection = cx.db.pymongo_test
+    def test_client_disconnect(self):
+        self.db.drop_collection("test")
+        self.db.test.insert_many([{"x": i} for i in range(1000)])
 
-        # acquire a request socket for the main thread
-        collection.find_one()
-        pool = get_pool(collection.database.connection)
-        socket_info = pool._get_request_state()
-        assert isinstance(socket_info, SocketInfo)
-        request_sock = socket_info.sock
+        # Start 10 threads that execute a query, and 10 threads that call
+        # client.close() 10 times in a row.
+        threads = [SaveAndFind(self.db.test) for _ in range(10)]
+        threads.extend(Disconnect(self.db.client, 10) for _ in range(10))
 
-        state = FindPauseFind.create_shared_state(nthreads=10)
-
-        threads = [
-            FindPauseFind(collection, state)
-            for _ in range(state.nthreads)
-        ]
-
-        # Each thread does a find(), thus acquiring a request socket
-        for t in threads:
-            t.start()
-
-        # Wait for the threads to reach the rendezvous
-        FindPauseFind.wait_for_rendezvous(state)
-
-        try:
-            # Simulate an event that closes all sockets, e.g. primary stepdown
+        with frequent_thread_switches():
+            # Frequent thread switches hurt performance badly enough to
+            # prevent reconnection within 5 seconds, especially in Python 2
+            # on a Windows build slave.
             for t in threads:
-                t.request_sock.close()
+                t.start()
 
-            # Finally, ensure the main thread's socket's last_checkout is
-            # updated:
-            collection.find_one()
+            for t in threads:
+                t.join(30)
 
-            # ... and close it:
-            request_sock.close()
+            for t in threads:
+                self.assertTrue(t.passed)
 
-            # Doing an operation on the client raises an AutoReconnect and
-            # resets the pool behind the scenes
-            self.assertRaises(AutoReconnect, collection.find_one)
 
-        finally:
-            # Let threads do a second find()
-            FindPauseFind.resume_after_rendezvous(state)
+class TestThreadsAuth(IntegrationTest):
+    @classmethod
+    @client_context.require_auth
+    def setUpClass(cls):
+        super(TestThreadsAuth, cls).setUpClass()
+
+    def test_auto_auth_login(self):
+        client = rs_or_single_client_noauth()
+        self.assertRaises(OperationFailure, client.auth_test.test.find_one)
+
+        # Admin auth
+        client.admin.authenticate(db_user, db_pwd)
+
+        nthreads = 10
+        threads = []
+        for _ in range(nthreads):
+            t = AutoAuthenticateThreads(client.auth_test.test, 10)
+            t.start()
+            threads.append(t)
 
         joinall(threads)
 
         for t in threads:
-            self.assertTrue(t.passed, "%s threw exception" % t)
-
-
-class TestThreads(BaseTestThreads, unittest.TestCase):
-    pass
+            self.assertTrue(t.success)
 
 
 if __name__ == "__main__":
