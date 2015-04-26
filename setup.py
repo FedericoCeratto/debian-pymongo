@@ -1,4 +1,3 @@
-import glob
 import os
 import platform
 import re
@@ -6,17 +5,11 @@ import subprocess
 import sys
 import warnings
 
-# Hack to silence atexit traceback in newer python versions.
+# Hack to silence atexit traceback in some Python versions
 try:
     import multiprocessing
 except ImportError:
     pass
-
-try:
-    from ConfigParser import SafeConfigParser
-except ImportError:
-    # PY3
-    from configparser import SafeConfigParser
 
 # Don't force people to install setuptools unless
 # we have to.
@@ -29,11 +22,11 @@ except ImportError:
 
 from distutils.cmd import Command
 from distutils.command.build_ext import build_ext
-from distutils.errors import CCompilerError
+from distutils.errors import CCompilerError, DistutilsOptionError
 from distutils.errors import DistutilsPlatformError, DistutilsExecError
 from distutils.core import Extension
 
-version = "2.8"
+version = "3.0.1"
 
 f = open("README.rst")
 try:
@@ -43,8 +36,6 @@ try:
         readme_content = ""
 finally:
     f.close()
-
-PY3 = sys.version_info[0] == 3
 
 # PYTHON-654 - Clang doesn't support -mno-fused-madd but the pythons Apple
 # ships are built with it. This is a problem starting with Xcode 5.1
@@ -62,30 +53,60 @@ if sys.platform == 'darwin' and 'clang' in platform.python_compiler().lower():
             flags = re.sub('-mno-fused-madd', '', flags)
             res[key] = flags
 
-nose_config_options = {
-    'with-xunit': '1',    # Write out nosetests.xml for CI.
-    'py3where': 'build',  # Tell nose where to find tests under PY3.
-}
 
-def write_nose_config():
-    """Write out setup.cfg. Since py3where has to be set
-    for tests to run correctly in Python 3 we create this
-    on the fly.
-    """
-    config = SafeConfigParser()
-    config.add_section('nosetests')
-    for opt, val in nose_config_options.items():
-        config.set('nosetests', opt, val)
-    try:
-        cf = open('setup.cfg', 'w')
-        config.write(cf)
-    finally:
-        cf.close()
+class test(Command):
+    description = "run the tests"
 
+    user_options = [
+        ("test-module=", "m", "Discover tests in specified module"),
+        ("test-suite=", "s",
+         "Test suite to run (e.g. 'some_module.test_suite')"),
+        ("failfast", "f", "Stop running tests on first failure or error")
+    ]
 
-should_run_tests = False
-if "test" in sys.argv or "nosetests" in sys.argv:
-    should_run_tests = True
+    def initialize_options(self):
+        self.test_module = None
+        self.test_suite = None
+        self.failfast = False
+
+    def finalize_options(self):
+        if self.test_suite is None and self.test_module is None:
+            self.test_module = 'test'
+        elif self.test_module is not None and self.test_suite is not None:
+            raise DistutilsOptionError(
+                "You may specify a module or suite, but not both"
+            )
+
+    def run(self):
+        # Installing required packages, running egg_info and build_ext are
+        # part of normal operation for setuptools.command.test.test
+        if self.distribution.install_requires:
+            self.distribution.fetch_build_eggs(
+                self.distribution.install_requires)
+        if self.distribution.tests_require:
+            self.distribution.fetch_build_eggs(self.distribution.tests_require)
+        self.run_command('egg_info')
+        build_ext_cmd = self.reinitialize_command('build_ext')
+        build_ext_cmd.inplace = 1
+        self.run_command('build_ext')
+
+        # Construct a TextTestRunner directly from the unittest imported from
+        # test (this will be unittest2 under Python 2.6), which creates a
+        # TestResult that supports the 'addSkip' method. setuptools will by
+        # default create a TextTestRunner that uses the old TestResult class,
+        # resulting in DeprecationWarnings instead of skipping tests under 2.6.
+        from test import unittest, PymongoTestRunner, test_cases
+        if self.test_suite is None:
+            all_tests = unittest.defaultTestLoader.discover(self.test_module)
+            suite = unittest.TestSuite()
+            suite.addTests(sorted(test_cases(all_tests),
+                                  key=lambda x: x.__module__))
+        else:
+            suite = unittest.defaultTestLoader.loadTestsFromName(
+                self.test_suite)
+        result = PymongoTestRunner(verbosity=2,
+                                   failfast=self.failfast).run(suite)
+        sys.exit(not result.wasSuccessful())
 
 
 class doc(Command):
@@ -191,24 +212,11 @@ http://api.mongodb.org/python/current/installation.html#osx
                                                   "your platform configuration"
                                                   " - see above."))
 
-    def set_nose_options(self):
-        # Under python 3 we need to tell nose where to find the
-        # proper tests. if we built the C extensions this will be
-        # someplace like build/lib.<os>-<arch>-<python version>
-        if PY3:
-            ver = '.'.join(map(str, sys.version_info[:2]))
-            lib_dirs = glob.glob(os.path.join('build', 'lib*' + ver))
-            if lib_dirs:
-                nose_config_options['py3where'] = lib_dirs[0]
-        write_nose_config()
-
     def build_extension(self, ext):
         name = ext.name
-        if sys.version_info[:3] >= (2, 4, 0):
+        if sys.version_info[:3] >= (2, 6, 0):
             try:
                 build_ext.build_extension(self, ext)
-                if should_run_tests:
-                    self.set_nose_options()
             except build_errors:
                 e = sys.exc_info()[1]
                 sys.stdout.write('%s\n' % str(e))
@@ -221,7 +229,7 @@ http://api.mongodb.org/python/current/installation.html#osx
         else:
             warnings.warn(self.warning_message % ("The %s extension "
                                                   "module" % (name,),
-                                                  "Please use Python >= 2.4 "
+                                                  "Please use Python >= 2.6 "
                                                   "to take advantage of the "
                                                   "extension."))
 
@@ -237,9 +245,11 @@ ext_modules = [Extension('bson._cbson',
                                   'bson/buffer.c'])]
 
 extra_opts = {
-    "packages": ["bson", "pymongo", "gridfs"],
-    "test_suite": "nose.collector"
+    "packages": ["bson", "pymongo", "gridfs"]
 }
+if sys.version_info[:2] == (2, 6):
+    extra_opts['tests_require'] = "unittest2"
+
 if "--no_ext" in sys.argv:
     sys.argv.remove("--no_ext")
 elif (sys.platform.startswith("java") or
@@ -262,30 +272,6 @@ Performance may be degraded.\n
 else:
     extra_opts['ext_modules'] = ext_modules
 
-if PY3:
-    extra_opts["use_2to3"] = True
-    if should_run_tests:
-        # Distribute isn't smart enough to copy the
-        # tests and run 2to3 on them. We don't want to
-        # install the test suite so only do this if we
-        # are testing.
-        # https://bitbucket.org/tarek/distribute/issue/233
-        extra_opts["packages"].append("test")
-        extra_opts['package_data'] = {"test": ["certificates/ca.pem",
-                                               "certificates/client.pem"]}
-        # Hack to make "python3.x setup.py nosetests" work in python 3
-        # otherwise it won't run 2to3 before running the tests.
-        if "nosetests" in sys.argv:
-            sys.argv.remove("nosetests")
-            sys.argv.append("test")
-            # All "nosetests" does is import and run nose.main.
-            extra_opts["test_suite"] = "nose.main"
-
-# This may be called a second time if
-# we are testing with C extensions.
-if should_run_tests:
-    write_nose_config()
-
 setup(
     name="pymongo",
     version=version,
@@ -299,7 +285,6 @@ setup(
     keywords=["mongo", "mongodb", "pymongo", "gridfs", "bson"],
     install_requires=[],
     license="Apache License, Version 2.0",
-    tests_require=["nose"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
@@ -308,20 +293,17 @@ setup(
         "Operating System :: Microsoft :: Windows",
         "Operating System :: POSIX",
         "Programming Language :: Python :: 2",
-        "Programming Language :: Python :: 2.4",
-        "Programming Language :: Python :: 2.5",
         "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.1",
         "Programming Language :: Python :: 3.2",
         "Programming Language :: Python :: 3.3",
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: Implementation :: CPython",
-        "Programming Language :: Python :: Implementation :: Jython",
         "Programming Language :: Python :: Implementation :: PyPy",
         "Topic :: Database"],
     cmdclass={"build_ext": custom_build_ext,
-              "doc": doc},
+              "doc": doc,
+              "test": test},
     **extra_opts
 )

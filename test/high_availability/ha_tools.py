@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2009-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,18 +28,18 @@ from stat import S_IRUSR
 import pymongo
 import pymongo.errors
 from pymongo.read_preferences import ReadPreference
+from test.utils import connected
 
 home = os.environ.get('HOME')
 default_dbpath = os.path.join(home, 'data', 'pymongo_high_availability')
 dbpath = os.environ.get('DBPATH', default_dbpath)
 default_logpath = os.path.join(home, 'log', 'pymongo_high_availability')
-logpath = os.environ.get('LOGPATH', default_logpath)
-hostname = os.environ.get('HOSTNAME', socket.gethostname())
+logpath = os.path.expanduser(os.environ.get('LOGPATH', default_logpath))
+hostname = os.environ.get('HOSTNAME', 'localhost')
 port = int(os.environ.get('DBPORT', 27017))
-mongod = os.environ.get('MONGOD', 'mongod')
-mongos = os.environ.get('MONGOS', 'mongos')
-set_name = os.environ.get('SETNAME', 'repl0')
-use_greenlets = bool(os.environ.get('GREENLETS'))
+mongod = os.path.expanduser(os.environ.get('MONGOD', 'mongod'))
+mongos = os.path.expanduser(os.environ.get('MONGOS', 'mongos'))
+replica_set_name = os.environ.get('SETNAME', 'repl0')
 ha_tools_debug = bool(os.environ.get('HA_TOOLS_DEBUG'))
 
 
@@ -58,7 +58,7 @@ def kill_members(members, sig, hosts=nodes):
     for member in sorted(members):
         try:
             if ha_tools_debug:
-                print('killing %s' % (member,)),
+                print('killing %s' % (member,))
             proc = hosts[member]['proc']
             if 'java' in sys.platform:
                 # _process is a wrapped java.lang.UNIXProcess.
@@ -114,19 +114,15 @@ def start_replica_set(members, auth=False, fresh=True):
 
         try:
             os.makedirs(dbpath)
-        except OSError:
-            exc = sys.exc_info()[1]
+        except OSError as exc:
             print(exc)
             print("\tWhile creating %s" % (dbpath,))
 
     if auth:
         key_file = os.path.join(dbpath, 'key.txt')
         if not os.path.exists(key_file):
-            f = open(key_file, 'w')
-            try:
+            with open(key_file, 'w') as f:
                 f.write("my super secret system password")
-            finally:
-                f.close()
             os.chmod(key_file, S_IRUSR)
 
     for i in range(len(members)):
@@ -141,7 +137,7 @@ def start_replica_set(members, auth=False, fresh=True):
         cmd = [mongod,
                '--dbpath', path,
                '--port', str(cur_port),
-               '--replSet', set_name,
+               '--replSet', replica_set_name,
                '--nojournal', '--oplogSize', '64',
                '--logappend', '--logpath', member_logpath]
         if auth:
@@ -159,18 +155,17 @@ def start_replica_set(members, auth=False, fresh=True):
         if not res:
             return None
 
-    config = {'_id': set_name, 'members': members}
+    config = {'_id': replica_set_name, 'members': members}
     primary = members[0]['host']
-    c = pymongo.MongoClient(primary, use_greenlets=use_greenlets)
+    c = pymongo.MongoClient(primary)
     try:
         if ha_tools_debug:
             print('rs.initiate(%s)' % (config,))
 
         c.admin.command('replSetInitiate', config)
-    except pymongo.errors.OperationFailure:
+    except pymongo.errors.OperationFailure as exc:
         # Already initialized from a previous run?
         if ha_tools_debug:
-            exc = sys.exc_info()[1]
             print(exc)
 
     expected_arbiters = 0
@@ -198,11 +193,14 @@ def start_replica_set(members, auth=False, fresh=True):
         kill_all_members()
         raise Exception(
             "Replica set still not initalized after %s minutes" % patience)
-    return primary, set_name
+    return primary, replica_set_name
 
 
 def create_sharded_cluster(num_routers=3):
     global cur_port
+
+    if not os.path.exists(logpath):
+        os.makedirs(logpath)
 
     # Start a config server
     configdb_host = '%s:%d' % (hostname, cur_port)
@@ -274,12 +272,12 @@ def get_client():
     # secondary.
     for i, node in enumerate(nodes.keys()):
         try:
-            return pymongo.MongoClient(
-                node,
-                read_preference=ReadPreference.PRIMARY_PREFERRED,
-                use_greenlets=use_greenlets)
+            return connected(
+                pymongo.MongoClient(
+                    node,
+                    read_preference=ReadPreference.PRIMARY_PREFERRED))
         except pymongo.errors.ConnectionFailure:
-            if i == len(nodes.keys()) - 1:
+            if i == len(nodes) - 1:
                 raise
 
 
@@ -397,7 +395,7 @@ def add_member(auth=False):
     host = '%s:%d' % (hostname, cur_port)
     primary = get_primary()
     assert primary
-    c = pymongo.MongoClient(primary, use_greenlets=use_greenlets)
+    c = pymongo.MongoClient(primary)
     config = c.local.system.replset.find_one()
     _id = max([member['_id'] for member in config['members']]) + 1
     member = {'_id': _id, 'host': host}
@@ -412,14 +410,14 @@ def add_member(auth=False):
     cmd = [mongod,
            '--dbpath', path,
            '--port', str(cur_port),
-           '--replSet', set_name,
+           '--replSet', replica_set_name,
            '--nojournal', '--oplogSize', '64',
            '--logappend', '--logpath', member_logpath]
     if auth:
         cmd += ['--keyFile', key_file]
 
     if ha_tools_debug:
-        print 'starting', ' '.join(cmd)
+        print('starting %s' % ' '.join(cmd))
 
     proc = subprocess.Popen(cmd,
                             stdout=subprocess.PIPE,
@@ -433,11 +431,11 @@ def add_member(auth=False):
     config['version'] += 1
 
     if ha_tools_debug:
-        print {'replSetReconfig': config}
+        print({'replSetReconfig': config})
 
     response = c.admin.command({'replSetReconfig': config})
     if ha_tools_debug:
-        print response
+        print(response)
 
     if not res:
         return None
@@ -449,14 +447,27 @@ def stepdown_primary():
     if primary:
         if ha_tools_debug:
             print('stepping down primary: %s' % (primary,))
-        c = pymongo.MongoClient(primary, use_greenlets=use_greenlets)
-        # replSetStepDown causes mongod to close all connections
-        try:
-            c.admin.command('replSetStepDown', 20)
-        except Exception:
-            if ha_tools_debug:
-                exc = sys.exc_info()[1]
-                print('Exception from replSetStepDown: %s' % exc)
+        c = pymongo.MongoClient(primary)
+
+        for _ in range(10):
+            try:
+                c.admin.command('replSetStepDown', 20)
+            except pymongo.errors.OperationFailure as exc:
+                if ha_tools_debug:
+                    print('Code %s from replSetStepDown: %s' % (exc.code, exc))
+                    print('Trying again in one second....')
+
+                time.sleep(1)
+            except pymongo.errors.ConnectionFailure as exc:
+                # replSetStepDown causes mongod to close all connections.
+                if ha_tools_debug:
+                    print('Exception from replSetStepDown: %s' % exc)
+
+                # Seems to have succeeded.
+                break
+        else:
+            raise AssertionError("Couldn't complete replSetStepDown")
+
         if ha_tools_debug:
             print('\tcalled replSetStepDown')
     elif ha_tools_debug:
@@ -466,7 +477,7 @@ def stepdown_primary():
 def set_maintenance(member, value):
     """Put a member into RECOVERING state if value is True, else normal state.
     """
-    c = pymongo.MongoClient(member, use_greenlets=use_greenlets)
+    c = pymongo.MongoClient(member)
     c.admin.command('replSetMaintenance', value)
     start = time.time()
     while value != (member in get_recovering()):

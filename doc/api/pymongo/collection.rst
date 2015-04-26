@@ -12,7 +12,14 @@
    .. autodata:: pymongo.HASHED
    .. autodata:: pymongo.TEXT
 
-   .. autoclass:: pymongo.collection.Collection(database, name[, create=False[, **kwargs]]])
+   .. autoclass:: pymongo.collection.ReturnDocument
+
+      .. autoattribute:: BEFORE
+         :annotation:
+      .. autoattribute:: AFTER
+         :annotation:
+
+   .. autoclass:: pymongo.collection.Collection(database, name, create=False, **kwargs)
 
       .. describe:: c[name] || c.name
 
@@ -24,39 +31,46 @@
       .. autoattribute:: full_name
       .. autoattribute:: name
       .. autoattribute:: database
+      .. autoattribute:: codec_options
       .. autoattribute:: read_preference
-      .. autoattribute:: tag_sets
-      .. autoattribute:: secondary_acceptable_latency_ms
       .. autoattribute:: write_concern
-      .. autoattribute:: uuid_subtype
-      .. automethod:: insert(doc_or_docs[, manipulate=True[, safe=None[, check_keys=True[, continue_on_error=False[, **kwargs]]]]])
-      .. automethod:: save(to_save[, manipulate=True[, safe=None[, check_keys=True[, **kwargs]]]])
-      .. automethod:: update(spec, document[, upsert=False[, manipulate=False[, safe=None[, multi=False[, check_keys=True[, **kwargs]]]]]])
-      .. automethod:: remove([spec_or_id=None[, safe=None[, multi=True[, **kwargs]]]])
-      .. automethod:: initialize_unordered_bulk_op
-      .. automethod:: initialize_ordered_bulk_op
-      .. automethod:: drop
-      .. automethod:: find([spec=None[, fields=None[, skip=0[, limit=0[, timeout=True[, snapshot=False[, tailable=False[, sort=None[, max_scan=None[, as_class=None[, slave_okay=False[, await_data=False[, partial=False[, manipulate=True[, read_preference=ReadPreference.PRIMARY[, exhaust=False, [compile_re=True, [,**kwargs]]]]]]]]]]]]]]]]]])
-      .. automethod:: find_one([spec_or_id=None[, *args[, **kwargs]]])
-      .. automethod:: parallel_scan
+      .. automethod:: with_options
+      .. automethod:: bulk_write
+      .. automethod:: insert_one
+      .. automethod:: insert_many
+      .. automethod:: replace_one
+      .. automethod:: update_one
+      .. automethod:: update_many
+      .. automethod:: delete_one
+      .. automethod:: delete_many
+      .. automethod:: aggregate
+      .. automethod:: find(filter=None, projection=None, skip=0, limit=0, no_cursor_timeout=False, cursor_type=CursorType.NON_TAILABLE, sort=None, allow_partial_results=False, oplog_replay=False, modifiers=None, manipulate=True)
+      .. automethod:: find_one(filter_or_id=None, *args, **kwargs)
+      .. automethod:: find_one_and_delete
+      .. automethod:: find_one_and_replace(filter, replacement, projection=None, sort=None, return_document=ReturnDocument.BEFORE, **kwargs)
+      .. automethod:: find_one_and_update(filter, update, projection=None, sort=None, return_document=ReturnDocument.BEFORE, **kwargs)
       .. automethod:: count
+      .. automethod:: distinct
       .. automethod:: create_index
-      .. automethod:: ensure_index
+      .. automethod:: create_indexes
       .. automethod:: drop_index
       .. automethod:: drop_indexes
       .. automethod:: reindex
+      .. automethod:: list_indexes
       .. automethod:: index_information
-      .. automethod:: options
-      .. automethod:: aggregate
-      .. automethod:: group
+      .. automethod:: drop
       .. automethod:: rename
-      .. automethod:: distinct
+      .. automethod:: options
+      .. automethod:: group
       .. automethod:: map_reduce
       .. automethod:: inline_map_reduce
+      .. automethod:: parallel_scan
+      .. automethod:: initialize_unordered_bulk_op
+      .. automethod:: initialize_ordered_bulk_op
+      .. automethod:: insert(doc_or_docs, manipulate=True, check_keys=True, continue_on_error=False, **kwargs)
+      .. automethod:: save(to_save, manipulate=True, check_keys=True, **kwargs)
+      .. automethod:: update(spec, document, upsert=False, manipulate=False, multi=False, check_keys=True, **kwargs)
+      .. automethod:: remove(spec_or_id=None, multi=True, **kwargs)
       .. automethod:: find_and_modify
-      .. autoattribute:: slave_okay
-      .. autoattribute:: safe
-      .. automethod:: get_lasterror_options
-      .. automethod:: set_lasterror_options
-      .. automethod:: unset_lasterror_options
+      .. automethod:: ensure_index
 

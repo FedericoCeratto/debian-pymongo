@@ -1,4 +1,4 @@
-# Copyright 2011-2014 MongoDB, Inc.
+# Copyright 2011-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,160 +13,210 @@
 # limitations under the License.
 
 """Test the replica_set_connection module."""
+
+import contextlib
 import random
 import sys
-import unittest
-import warnings
-
-from nose.plugins.skip import SkipTest
 
 sys.path[0:0] = [""]
 
+from bson.py3compat import MAXSIZE
 from bson.son import SON
-from pymongo.cursor import _QUERY_OPTIONS
-from pymongo.mongo_replica_set_client import MongoReplicaSetClient
-from pymongo.read_preferences import (ReadPreference, modes, MovingAverage,
-                                      secondary_ok_commands)
 from pymongo.errors import ConfigurationError
+from pymongo.message import _maybe_add_read_preference
+from pymongo.mongo_client import MongoClient
+from pymongo.read_preferences import (ReadPreference, MovingAverage,
+                                      Primary, PrimaryPreferred,
+                                      Secondary, SecondaryPreferred,
+                                      Nearest, _ServerMode)
+from pymongo.server_selectors import any_server_selector
+from pymongo.server_type import SERVER_TYPE
+from pymongo.write_concern import WriteConcern
 
 from test.test_replica_set_client import TestReplicaSetClientBase
-from test.test_client import get_client
-from test import version, utils, host, port, skip_restricted_localhost
-from test.utils import catch_warnings
-
-
-setUpModule = skip_restricted_localhost
+from test import (SkipTest,
+                  client_context,
+                  host,
+                  port,
+                  unittest,
+                  db_user,
+                  db_pwd)
+from test.utils import single_client, one, wait_until, rs_client
+from test.version import Version
 
 
 class TestReadPreferencesBase(TestReplicaSetClientBase):
+
     def setUp(self):
         super(TestReadPreferencesBase, self).setUp()
         # Insert some data so we can use cursors in read_from_which_host
-        c = self._get_client()
-        c.pymongo_test.test.drop()
-        c.pymongo_test.test.insert([{'_id': i} for i in range(10)], w=self.w)
+        self.client.pymongo_test.test.drop()
+        self.client.get_database(
+            "pymongo_test",
+            write_concern=WriteConcern(w=self.w)).test.insert_many(
+                [{'_id': i} for i in range(10)])
 
-    def tearDown(self):
-        super(TestReadPreferencesBase, self).tearDown()
-        c = self._get_client()
-        c.pymongo_test.test.drop()
+        self.addCleanup(self.client.pymongo_test.test.drop)
 
     def read_from_which_host(self, client):
         """Do a find() on the client and return which host was used
         """
         cursor = client.pymongo_test.test.find()
-        cursor.next()
-        return cursor._Cursor__connection_id
+        next(cursor)
+        return cursor.address
 
     def read_from_which_kind(self, client):
         """Do a find() on the client and return 'primary' or 'secondary'
            depending on which the client used.
         """
-        connection_id = self.read_from_which_host(client)
-        if connection_id == client.primary:
+        address = self.read_from_which_host(client)
+        if address == client.primary:
             return 'primary'
-        elif connection_id in client.secondaries:
+        elif address in client.secondaries:
             return 'secondary'
         else:
             self.fail(
-                'Cursor used connection id %s, expected either primary '
+                'Cursor used address %s, expected either primary '
                 '%s or secondaries %s' % (
-                    connection_id, client.primary, client.secondaries))
+                    address, client.primary, client.secondaries))
 
     def assertReadsFrom(self, expected, **kwargs):
-        c = self._get_client(**kwargs)
+        c = rs_client(**kwargs)
+        wait_until(
+            lambda: len(c.nodes) == self.w,
+            "discovered all nodes")
+
         used = self.read_from_which_kind(c)
         self.assertEqual(expected, used, 'Cursor used %s, expected %s' % (
-            expected, used))
+            used, expected))
+
+
+class TestSingleSlaveOk(TestReadPreferencesBase):
+
+    def test_reads_from_secondary(self):
+
+        host, port = next(iter(self.client.secondaries))
+        # Direct connection to a secondary.
+        client = single_client(host, port)
+        self.assertFalse(client.is_primary)
+
+        # Regardless of read preference, we should be able to do
+        # "reads" with a direct connection to a secondary.
+        # See server-selection.rst#topology-type-single.
+        self.assertEqual(client.read_preference, ReadPreference.PRIMARY)
+
+        db = client.pymongo_test
+        coll = db.test
+
+        # Test find and find_one.
+        self.assertIsNotNone(coll.find_one())
+        self.assertEqual(10, len(list(coll.find())))
+
+        # Test some database helpers.
+        self.assertIsNotNone(db.collection_names())
+        self.assertIsNotNone(db.validate_collection("test"))
+        self.assertIsNotNone(db.command("count", "test"))
+
+        # Test some collection helpers.
+        self.assertEqual(10, coll.count())
+        self.assertEqual(10, len(coll.distinct("_id")))
+        self.assertIsNotNone(coll.aggregate([]))
+        self.assertIsNotNone(coll.index_information())
+
+        # Test some "magic" namespace helpers.
+        self.assertIsNotNone(db.current_op())
+        client.unlock()  # No error.
 
 
 class TestReadPreferences(TestReadPreferencesBase):
     def test_mode_validation(self):
-        # 'modes' are imported from read_preferences.py
-        for mode in modes:
-            self.assertEqual(mode, self._get_client(
-                read_preference=mode).read_preference)
+        for mode in (ReadPreference.PRIMARY,
+                     ReadPreference.PRIMARY_PREFERRED,
+                     ReadPreference.SECONDARY,
+                     ReadPreference.SECONDARY_PREFERRED,
+                     ReadPreference.NEAREST):
+            self.assertEqual(
+                mode,
+                rs_client(read_preference=mode).read_preference)
 
-        self.assertRaises(ConfigurationError, self._get_client,
-            read_preference='foo')
+        self.assertRaises(
+            TypeError,
+            rs_client, read_preference='foo')
 
     def test_tag_sets_validation(self):
         # Can't use tags with PRIMARY
-        self.assertRaises(ConfigurationError, self._get_client,
-            tag_sets=[{'k': 'v'}])
+        self.assertRaises(ConfigurationError, _ServerMode,
+                          0, tag_sets=[{'k': 'v'}])
 
         # ... but empty tag sets are ok with PRIMARY
-        self.assertEqual([{}], self._get_client(tag_sets=[{}]).tag_sets)
+        self.assertRaises(ConfigurationError, _ServerMode,
+                          0, tag_sets=[{}])
 
-        S = ReadPreference.SECONDARY
-        self.assertEqual([{}], self._get_client(read_preference=S).tag_sets)
+        S = Secondary(tag_sets=[{}])
+        self.assertEqual(
+            [{}],
+            rs_client(read_preference=S).read_preference.tag_sets)
 
-        self.assertEqual([{'k': 'v'}], self._get_client(
-            read_preference=S, tag_sets=[{'k': 'v'}]).tag_sets)
+        S = Secondary(tag_sets=[{'k': 'v'}])
+        self.assertEqual(
+            [{'k': 'v'}],
+            rs_client(read_preference=S).read_preference.tag_sets)
 
-        self.assertEqual([{'k': 'v'}, {}], self._get_client(
-            read_preference=S, tag_sets=[{'k': 'v'}, {}]).tag_sets)
+        S = Secondary(tag_sets=[{'k': 'v'}, {}])
+        self.assertEqual(
+            [{'k': 'v'}, {}],
+            rs_client(read_preference=S).read_preference.tag_sets)
 
-        self.assertRaises(ConfigurationError, self._get_client,
-            read_preference=S, tag_sets=[])
+        self.assertRaises(ValueError, Secondary, tag_sets=[])
 
         # One dict not ok, must be a list of dicts
-        self.assertRaises(ConfigurationError, self._get_client,
-            read_preference=S, tag_sets={'k': 'v'})
+        self.assertRaises(TypeError, Secondary, tag_sets={'k': 'v'})
 
-        self.assertRaises(ConfigurationError, self._get_client,
-            read_preference=S, tag_sets='foo')
+        self.assertRaises(TypeError, Secondary, tag_sets='foo')
 
-        self.assertRaises(ConfigurationError, self._get_client,
-            read_preference=S, tag_sets=['foo'])
+        self.assertRaises(TypeError, Secondary, tag_sets=['foo'])
 
-    def test_latency_validation(self):
-        self.assertEqual(17, self._get_client(
-            secondary_acceptable_latency_ms=17
-        ).secondary_acceptable_latency_ms)
+    def test_threshold_validation(self):
+        self.assertEqual(17, rs_client(
+            localThresholdMS=17
+        ).local_threshold_ms)
 
-        self.assertEqual(42, self._get_client(
-            secondaryAcceptableLatencyMS=42
-        ).secondary_acceptable_latency_ms)
+        self.assertEqual(42, rs_client(
+            localThresholdMS=42
+        ).local_threshold_ms)
 
-        self.assertEqual(666, self._get_client(
-            secondaryacceptablelatencyms=666
-        ).secondary_acceptable_latency_ms)
+        self.assertEqual(666, rs_client(
+            localthresholdms=666
+        ).local_threshold_ms)
 
     def test_primary(self):
-        self.assertReadsFrom('primary',
-            read_preference=ReadPreference.PRIMARY)
+        self.assertReadsFrom(
+            'primary', read_preference=ReadPreference.PRIMARY)
 
     def test_primary_with_tags(self):
         # Tags not allowed with PRIMARY
-        self.assertRaises(ConfigurationError,
-            self._get_client, tag_sets=[{'dc': 'ny'}])
+        self.assertRaises(
+            ConfigurationError,
+            rs_client, tag_sets=[{'dc': 'ny'}])
 
     def test_primary_preferred(self):
-        self.assertReadsFrom('primary',
-            read_preference=ReadPreference.PRIMARY_PREFERRED)
+        self.assertReadsFrom(
+            'primary', read_preference=ReadPreference.PRIMARY_PREFERRED)
 
     def test_secondary(self):
-        self.assertReadsFrom('secondary',
-            read_preference=ReadPreference.SECONDARY)
+        self.assertReadsFrom(
+            'secondary', read_preference=ReadPreference.SECONDARY)
 
     def test_secondary_preferred(self):
-        self.assertReadsFrom('secondary',
-            read_preference=ReadPreference.SECONDARY_PREFERRED)
-
-    def test_secondary_only(self):
-        # Test deprecated mode SECONDARY_ONLY, which is now a synonym for
-        # SECONDARY
-        self.assertEqual(
-            ReadPreference.SECONDARY, ReadPreference.SECONDARY_ONLY)
+        self.assertReadsFrom(
+            'secondary', read_preference=ReadPreference.SECONDARY_PREFERRED)
 
     def test_nearest(self):
-        # With high secondaryAcceptableLatencyMS, expect to read from any
+        # With high localThresholdMS, expect to read from any
         # member
-        c = self._get_client(
+        c = rs_client(
             read_preference=ReadPreference.NEAREST,
-            secondaryAcceptableLatencyMS=10000, # 10 seconds
-            auto_start_request=False)
+            localThresholdMS=10000)  # 10 seconds
 
         data_members = set(self.hosts).difference(set(self.arbiters))
 
@@ -177,477 +227,268 @@ class TestReadPreferences(TestReadPreferencesBase):
         used = set()
         i = 0
         while data_members.difference(used) and i < 10000:
-            host = self.read_from_which_host(c)
-            used.add(host)
+            address = self.read_from_which_host(c)
+            used.add(address)
             i += 1
 
         not_used = data_members.difference(used)
         latencies = ', '.join(
-            '%s: %dms' % (member.host, member.ping_time.get())
-            for member in c._MongoReplicaSetClient__rs_state.members)
+            '%s: %dms' % (server.description.address,
+                          server.description.round_trip_time)
+            for server in c._get_topology().select_servers(any_server_selector))
 
-        self.assertFalse(not_used,
+        self.assertFalse(
+            not_used,
             "Expected to use primary and all secondaries for mode NEAREST,"
             " but didn't use %s\nlatencies: %s" % (not_used, latencies))
 
 
-class ReadPrefTester(MongoReplicaSetClient):
+class ReadPrefTester(MongoClient):
     def __init__(self, *args, **kwargs):
         self.has_read_from = set()
         super(ReadPrefTester, self).__init__(*args, **kwargs)
 
-    def _MongoReplicaSetClient__send_and_receive(self, member, *args, **kwargs):
-        self.has_read_from.add(member)
-        rsc = super(ReadPrefTester, self)
-        return rsc._MongoReplicaSetClient__send_and_receive(
-            member, *args, **kwargs)
+    @contextlib.contextmanager
+    def _socket_for_reads(self, read_preference):
+        context = super(ReadPrefTester, self)._socket_for_reads(read_preference)
+        with context as (sock_info, slave_ok):
+            self.record_a_read(sock_info.address)
+            yield sock_info, slave_ok
+
+    def record_a_read(self, address):
+        server = self._get_topology().select_server_by_address(address, 0)
+        self.has_read_from.add(server)
+
+_PREF_MAP = [
+    (Primary, SERVER_TYPE.RSPrimary),
+    (PrimaryPreferred, SERVER_TYPE.RSPrimary),
+    (Secondary, SERVER_TYPE.RSSecondary),
+    (SecondaryPreferred, SERVER_TYPE.RSSecondary),
+    (Nearest, 'any')
+]
 
 
 class TestCommandAndReadPreference(TestReplicaSetClientBase):
+
     def setUp(self):
         super(TestCommandAndReadPreference, self).setUp()
-
-        # Need auto_start_request False to avoid pinning members.
         self.c = ReadPrefTester(
             '%s:%s' % (host, port),
-            replicaSet=self.name, auto_start_request=False,
-            # Effectively ignore members' ping times so we can test the effect
-            # of ReadPreference modes only
-            secondary_acceptable_latency_ms=1000*1000)
+            replicaSet=self.name,
+            # Ignore round trip times, to test ReadPreference modes only.
+            localThresholdMS=1000*1000)
+        if client_context.auth_enabled:
+            self.c.admin.authenticate(db_user, db_pwd)
+        self.client_version = Version.from_client(self.c)
+        self.addCleanup(self.c.drop_database, 'pymongo_test')
 
-    def tearDown(self):
-        # We create a lot of collections and indexes in these tests, so drop
-        # the database.
-        self.c.drop_database('pymongo_test')
-        self.c.close()
-        self.c = None
-        super(TestCommandAndReadPreference, self).tearDown()
-
-    def executed_on_which_member(self, client, fn, *args, **kwargs):
+    def executed_on_which_server(self, client, fn, *args, **kwargs):
+        """Execute fn(*args, **kwargs) and return the Server instance used."""
         client.has_read_from.clear()
         fn(*args, **kwargs)
         self.assertEqual(1, len(client.has_read_from))
-        member, = client.has_read_from
-        return member
+        return one(client.has_read_from)
 
-    def assertExecutedOn(self, state, client, fn, *args, **kwargs):
-        member = self.executed_on_which_member(client, fn, *args, **kwargs)
-        if state == 'primary':
-            self.assertTrue(member.is_primary)
-        elif state == 'secondary':
-            self.assertFalse(member.is_primary)
-        else:
-            self.fail("Bad state %s" % repr(state))
+    def assertExecutedOn(self, server_type, client, fn, *args, **kwargs):
+        server = self.executed_on_which_server(client, fn, *args, **kwargs)
+        self.assertEqual(SERVER_TYPE._fields[server_type],
+                         SERVER_TYPE._fields[server.description.server_type])
 
-    def _test_fn(self, obedient, fn):
-        if not obedient:
-            for mode in modes:
-                self.c.read_preference = mode
+    def _test_fn(self, server_type, fn):
+        for _ in range(10):
+            if server_type == 'any':
+                used = set()
+                for _ in range(1000):
+                    server = self.executed_on_which_server(self.c, fn)
+                    used.add(server.description.address)
+                    if len(used) == len(self.c.secondaries) + 1:
+                        # Success
+                        break
 
-                # Run it a few times to make sure we don't just get lucky the
-                # first time.
-                for _ in range(10):
-                    self.assertExecutedOn('primary', self.c, fn)
-        else:
-            for mode, expected_state in [
-                (ReadPreference.PRIMARY, 'primary'),
-                (ReadPreference.PRIMARY_PREFERRED, 'primary'),
-                (ReadPreference.SECONDARY, 'secondary'),
-                (ReadPreference.SECONDARY_PREFERRED, 'secondary'),
-                (ReadPreference.NEAREST, 'any'),
-            ]:
-                self.c.read_preference = mode
-                for _ in range(10):
-                    if expected_state in ('primary', 'secondary'):
-                        self.assertExecutedOn(expected_state, self.c, fn)
-                    elif expected_state == 'any':
-                        used = set()
-                        for _ in range(1000):
-                            member = self.executed_on_which_member(
-                                self.c, fn)
-                            used.add(member.host)
-                            if len(used) == len(self.c.secondaries) + 1:
-                                # Success
-                                break
+                unused = self.c.secondaries.union(
+                    set([self.c.primary])
+                ).difference(used)
+                if unused:
+                    self.fail(
+                        "Some members not used for NEAREST: %s" % (
+                            unused))
+            else:
+                self.assertExecutedOn(server_type, self.c, fn)
 
-                        unused = self.c.secondaries.union(
-                            set([self.c.primary])
-                        ).difference(used)
-                        if unused:
-                            self.fail(
-                                "Some members not used for NEAREST: %s" % (
-                                    unused))
+    def _test_primary_helper(self, func):
+        # Helpers that ignore read preference.
+        self._test_fn(SERVER_TYPE.RSPrimary, func)
+
+    def _test_coll_helper(self, secondary_ok, coll, meth, *args, **kwargs):
+        for mode, server_type in _PREF_MAP:
+            new_coll = coll.with_options(read_preference=mode())
+            func = lambda: getattr(new_coll, meth)(*args, **kwargs)
+            if secondary_ok:
+                self._test_fn(server_type, func)
+            else:
+                self._test_fn(SERVER_TYPE.RSPrimary, func)
 
     def test_command(self):
-        # Test generic 'command' method. Some commands obey read preference,
-        # most don't.
-        # Disobedient commands, always go to primary
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.command('ping'))
-            self._test_fn(False, lambda: self.c.admin.command('buildinfo'))
-        finally:
-            ctx.exit()
-
-        # Obedient commands.
-        self._test_fn(True, lambda: self.c.pymongo_test.command('group', {
-            'ns': 'test', 'key': {'a': 1}, '$reduce': 'function(obj, prev) { }',
-            'initial': {}}))
-
-        self._test_fn(True, lambda: self.c.pymongo_test.command('dbStats'))
-
-        # collStats fails if no collection
-        self.c.pymongo_test.test.insert({}, w=self.w)
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'collStats', 'test'))
-
-        # Count
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'count', 'test'))
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'count', 'test', query={'a': 1}))
-        self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-            ('count', 'test'), ('query', {'a': 1})])))
-
-        # Distinct
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'distinct', 'test', key='a'))
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'distinct', 'test', key='a', query={'a': 1}))
-        self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-            ('distinct', 'test'), ('key', 'a'), ('query', {'a': 1})])))
-
-        # Geo stuff.
-        self.c.pymongo_test.test.create_index([('location', '2d')])
-
-        self.c.pymongo_test.test.create_index([('location', 'geoHaystack'),
-                                               ('key', 1)], bucketSize=100)
-
-        # Attempt to await replication of indexes replicated.
-        self.c.pymongo_test.test2.insert({}, w=self.w)
-        self.c.pymongo_test.test2.remove({}, w=self.w)
-
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'geoNear', 'test', near=[0, 0]))
-        self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-            ('geoNear', 'test'), ('near', [0, 0])])))
-
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'geoSearch', 'test', near=[33, 33], maxDistance=6,
-            search={'type': 'restaurant' }, limit=30))
-
-        self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-            ('geoSearch', 'test'), ('near', [33, 33]), ('maxDistance', 6),
-            ('search', {'type': 'restaurant'}), ('limit', 30)])))
-
-        if version.at_least(self.c, (2, 1, 0)):
-            self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-                ('aggregate', 'test'),
-                ('pipeline', [])
-            ])))
-
-    def test_map_reduce_command(self):
-        # mapreduce fails if no collection
-        self.c.pymongo_test.test.insert({}, w=self.w)
-
-        # Non-inline mapreduce always goes to primary, doesn't obey read prefs.
-        # Test with command in a SON and with kwargs
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.command(SON([
-                ('mapreduce', 'test'),
-                ('map', 'function() { }'),
-                ('reduce', 'function() { }'),
-                ('out', 'mr_out')
-            ])))
-
-            self._test_fn(False, lambda: self.c.pymongo_test.command(
-                'mapreduce', 'test', map='function() { }',
-                reduce='function() { }', out='mr_out'))
-
-            self._test_fn(False, lambda: self.c.pymongo_test.command(
-                'mapreduce', 'test', map='function() { }',
-                reduce='function() { }', out={'replace': 'some_collection'}))
-        finally:
-            ctx.exit()
-
-        # Inline mapreduce obeys read prefs
-        self._test_fn(True, lambda: self.c.pymongo_test.command(
-            'mapreduce', 'test', map='function() { }',
-            reduce='function() { }', out={'inline': True}))
-
-        self._test_fn(True, lambda: self.c.pymongo_test.command(SON([
-            ('mapreduce', 'test'),
-            ('map', 'function() { }'),
-            ('reduce', 'function() { }'),
-            ('out', {'inline': True})
-        ])))
-
-    def test_aggregate_command_with_out(self):
-        if not version.at_least(self.c, (2, 5, 2)):
-            raise SkipTest("Aggregation with $out requires MongoDB >= 2.5.2")
-
-        # Tests aggregate command when pipeline contains $out.
-        self.c.pymongo_test.test.insert({"x": 1, "y": 1}, w=self.w)
-        self.c.pymongo_test.test.insert({"x": 1, "y": 2}, w=self.w)
-        self.c.pymongo_test.test.insert({"x": 2, "y": 1}, w=self.w)
-        self.c.pymongo_test.test.insert({"x": 2, "y": 2}, w=self.w)
-
-        # Aggregate with $out always goes to primary, doesn't obey read prefs.
-        # Test aggregate command sent directly to db.command.
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.command(
-                "aggregate", "test",
-                pipeline=[{"$match": {"x": 1}}, {"$out": "agg_out"}]
-            ))
-
-            # Test aggregate when sent through the collection aggregate function.
-            self._test_fn(False, lambda: self.c.pymongo_test.test.aggregate(
-                [{"$match": {"x": 2}}, {"$out": "agg_out"}]
-            ))
-        finally:
-            ctx.exit()
-
-        self.c.pymongo_test.drop_collection("test")
-        self.c.pymongo_test.drop_collection("agg_out")
+        # Test that the generic command helper obeys the read preference
+        # passed to it.
+        for mode, server_type in _PREF_MAP:
+            func = lambda: self.c.pymongo_test.command('dbStats',
+                                                       read_preference=mode())
+            self._test_fn(server_type, func)
 
     def test_create_collection(self):
         # Collections should be created on primary, obviously
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.command(
-                'create', 'some_collection%s' % random.randint(0, sys.maxint)))
-
-            self._test_fn(False, lambda: self.c.pymongo_test.create_collection(
-                'some_collection%s' % random.randint(0, sys.maxint)))
-        finally:
-            ctx.exit()
+        self._test_primary_helper(
+            lambda: self.c.pymongo_test.create_collection(
+                'some_collection%s' % random.randint(0, MAXSIZE)))
 
     def test_drop_collection(self):
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.drop_collection(
-                'some_collection'))
+        self._test_primary_helper(
+            lambda: self.c.pymongo_test.drop_collection('some_collection'))
 
-            self._test_fn(False, lambda: self.c.pymongo_test.some_collection.drop())
-        finally:
-            ctx.exit()
+        self._test_primary_helper(
+            lambda: self.c.pymongo_test.some_collection.drop())
 
     def test_group(self):
-        self._test_fn(True, lambda: self.c.pymongo_test.test.group(
-            {'a': 1}, {}, {}, 'function() { }'))
+        self._test_coll_helper(True, self.c.pymongo_test.test, 'group',
+                               {'a': 1}, {}, {}, 'function() { }')
 
     def test_map_reduce(self):
         # mapreduce fails if no collection
-        self.c.pymongo_test.test.insert({}, w=self.w)
+        coll = self.c.pymongo_test.test.with_options(
+            write_concern=WriteConcern(w=self.w))
+        coll.insert_one({})
 
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            self._test_fn(False, lambda: self.c.pymongo_test.test.map_reduce(
-                'function() { }', 'function() { }', 'mr_out'))
-        finally:
-            ctx.exit()
+        self._test_coll_helper(False, self.c.pymongo_test.test, 'map_reduce',
+                               'function() { }', 'function() { }', 'mr_out')
 
-        self._test_fn(True, lambda: self.c.pymongo_test.test.map_reduce(
-            'function() { }', 'function() { }', {'inline': 1}))
+        self._test_coll_helper(False, self.c.pymongo_test.test, 'map_reduce',
+                               'function() { }', 'function() { }',
+                               {'inline': 1})
 
     def test_inline_map_reduce(self):
         # mapreduce fails if no collection
-        self.c.pymongo_test.test.insert({}, w=self.w)
+        coll = self.c.pymongo_test.test.with_options(
+            write_concern=WriteConcern(w=self.w))
+        coll.insert_one({})
 
-        self._test_fn(True, lambda: self.c.pymongo_test.test.inline_map_reduce(
-            'function() { }', 'function() { }'))
-
-        self._test_fn(True, lambda: self.c.pymongo_test.test.inline_map_reduce(
-            'function() { }', 'function() { }', full_response=True))
+        self._test_coll_helper(True, self.c.pymongo_test.test,
+                               'inline_map_reduce',
+                               'function() { }', 'function() { }')
 
     def test_count(self):
-        self._test_fn(True, lambda: self.c.pymongo_test.test.count())
-        self._test_fn(True, lambda: self.c.pymongo_test.test.find().count())
+        self._test_coll_helper(True, self.c.pymongo_test.test, 'count')
 
     def test_distinct(self):
-        self._test_fn(True, lambda: self.c.pymongo_test.test.distinct('a'))
-        self._test_fn(True,
-            lambda: self.c.pymongo_test.test.find().distinct('a'))
+        self._test_coll_helper(True, self.c.pymongo_test.test, 'distinct', 'a')
 
     def test_aggregate(self):
-        if version.at_least(self.c, (2, 1, 0)):
-            self._test_fn(True, lambda: self.c.pymongo_test.test.aggregate([]))
+        if self.client_version.at_least(2, 1, 0):
+            self._test_coll_helper(True, self.c.pymongo_test.test,
+                                   'aggregate',
+                                   [{'$project': {'_id': 1}}])
 
 
 class TestMovingAverage(unittest.TestCase):
-    def test_empty_init(self):
-        self.assertRaises(AssertionError, MovingAverage, [])
-
     def test_moving_average(self):
-        avg = MovingAverage([10])
-        self.assertEqual(10, avg.get())
-        avg2 = avg.clone_with(20)
-        self.assertEqual(15, avg2.get())
-        avg3 = avg2.clone_with(30)
-        self.assertEqual(20, avg3.get())
-        avg4 = avg3.clone_with(-100)
-        self.assertEqual((10 + 20 + 30 - 100) / 4., avg4.get())
-        avg5 = avg4.clone_with(17)
-        self.assertEqual((10 + 20 + 30 - 100 + 17) / 5., avg5.get())
-        avg6 = avg5.clone_with(43)
-        self.assertEqual((20 + 30 - 100 + 17 + 43) / 5., avg6.get())
-        avg7 = avg6.clone_with(-1111)
-        self.assertEqual((30 - 100 + 17 + 43 - 1111) / 5., avg7.get())
+        avg = MovingAverage()
+        self.assertIsNone(avg.get())
+        avg.add_sample(10)
+        self.assertAlmostEqual(10, avg.get())
+        avg.add_sample(20)
+        self.assertAlmostEqual(12, avg.get())
+        avg.add_sample(30)
+        self.assertAlmostEqual(15.6, avg.get())
 
+class TestMongosAndReadPreference(unittest.TestCase):
 
-class TestMongosConnection(unittest.TestCase):
-    def test_mongos_connection(self):
-        c = get_client()
-        is_mongos = utils.is_mongos(c)
+    def test_maybe_add_read_preference(self):
 
-        # Test default mode, PRIMARY
-        cursor = c.pymongo_test.test.find()
-        if is_mongos:
-            # We only set $readPreference if it's something other than
-            # PRIMARY to avoid problems with mongos versions that don't
-            # support read preferences.
-            self.assertEqual(
-                None,
-                cursor._Cursor__query_spec().get('$readPreference')
-            )
-        else:
-            self.assertFalse(
-                '$readPreference' in cursor._Cursor__query_spec())
+        # Primary doesn't add $readPreference
+        out = _maybe_add_read_preference({}, Primary())
+        self.assertEqual(out, {})
 
-        # Copy these constants for brevity
-        PRIMARY_PREFERRED = ReadPreference.PRIMARY_PREFERRED
-        SECONDARY = ReadPreference.SECONDARY
-        SECONDARY_PREFERRED = ReadPreference.SECONDARY_PREFERRED
-        NEAREST = ReadPreference.NEAREST
-        SLAVE_OKAY = _QUERY_OPTIONS['slave_okay']
+        pref = PrimaryPreferred()
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
+        pref = PrimaryPreferred(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
 
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", DeprecationWarning)
-            # Test non-PRIMARY modes which can be combined with tags
-            for kwarg, value, mongos_mode in (
-                ('read_preference', PRIMARY_PREFERRED, 'primaryPreferred'),
-                ('read_preference', SECONDARY, 'secondary'),
-                ('read_preference', SECONDARY_PREFERRED, 'secondaryPreferred'),
-                ('read_preference', NEAREST, 'nearest'),
-                ('slave_okay', True, 'secondaryPreferred'),
-                ('slave_okay', False, 'primary')
-            ):
-                for tag_sets in (
-                    None, [{}]
-                ):
-                    # Create a client e.g. with read_preference=NEAREST or
-                    # slave_okay=True
-                    c = get_client(tag_sets=tag_sets, **{kwarg: value})
+        pref = Secondary()
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
+        pref = Secondary(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
 
-                    self.assertEqual(is_mongos, c.is_mongos)
-                    cursor = c.pymongo_test.test.find()
-                    if is_mongos:
-                        # We don't set $readPreference for SECONDARY_PREFERRED
-                        # unless tags are in use. slaveOkay has the same effect.
-                        if mongos_mode == 'secondaryPreferred':
-                            self.assertEqual(
-                                None,
-                                cursor._Cursor__query_spec().get('$readPreference'))
+        # SecondaryPreferred without tag_sets doesn't add $readPreference
+        pref = SecondaryPreferred()
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(out, {})
+        pref = SecondaryPreferred(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
 
-                            self.assertTrue(
-                                cursor._Cursor__query_options() & SLAVE_OKAY)
+        pref = Nearest()
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
+        pref = Nearest(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
 
-                        # Don't send $readPreference for PRIMARY either
-                        elif mongos_mode == 'primary':
-                            self.assertEqual(
-                                None,
-                                cursor._Cursor__query_spec().get('$readPreference'))
+        criteria = SON([("$query", {}), ("$orderby", SON([("_id", 1)]))])
+        pref = Nearest()
+        out = _maybe_add_read_preference(criteria, pref)
+        self.assertEqual(
+            out,
+            SON([("$query", {}),
+                 ("$orderby", SON([("_id", 1)])),
+                 ("$readPreference", pref.document)]))
+        pref = Nearest(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference(criteria, pref)
+        self.assertEqual(
+            out,
+            SON([("$query", {}),
+                 ("$orderby", SON([("_id", 1)])),
+                 ("$readPreference", pref.document)]))
 
-                            self.assertFalse(
-                                cursor._Cursor__query_options() & SLAVE_OKAY)
-                        else:
-                            self.assertEqual(
-                                {'mode': mongos_mode},
-                                cursor._Cursor__query_spec().get('$readPreference'))
+    @client_context.require_mongos
+    def test_mongos(self):
+        shard = client_context.client.config.shards.find_one()['host']
+        num_members = shard.count(',') + 1
+        if num_members == 1:
+            raise SkipTest("Need a replica set shard to test.")
+        coll = client_context.client.pymongo_test.get_collection(
+            "test",
+            write_concern=WriteConcern(w=num_members))
+        coll.drop()
+        res = coll.insert_many([{} for _ in range(5)])
+        first_id = res.inserted_ids[0]
+        last_id = res.inserted_ids[-1]
 
-                            self.assertTrue(
-                                cursor._Cursor__query_options() & SLAVE_OKAY)
-                    else:
-                        self.assertFalse(
-                            '$readPreference' in cursor._Cursor__query_spec())
+        # Note - this isn't a perfect test since there's no way to
+        # tell what shard member a query ran on.
+        for pref in (Primary(),
+                     PrimaryPreferred(),
+                     Secondary(),
+                     SecondaryPreferred(),
+                     Nearest()):
+            qcoll = coll.with_options(read_preference=pref)
+            results = list(qcoll.find().sort([("_id", 1)]))
+            self.assertEqual(first_id, results[0]["_id"])
+            self.assertEqual(last_id, results[-1]["_id"])
+            results = list(qcoll.find().sort([("_id", -1)]))
+            self.assertEqual(first_id, results[-1]["_id"])
+            self.assertEqual(last_id, results[0]["_id"])
 
-                for tag_sets in (
-                    [{'dc': 'la'}],
-                    [{'dc': 'la'}, {'dc': 'sf'}],
-                    [{'dc': 'la'}, {'dc': 'sf'}, {}],
-                ):
-                    if kwarg == 'slave_okay':
-                        # Can't use tags with slave_okay True or False, need a
-                        # real read preference
-                        self.assertRaises(
-                            ConfigurationError,
-                            get_client, tag_sets=tag_sets, **{kwarg: value})
-
-                        continue
-
-                    c = get_client(tag_sets=tag_sets, **{kwarg: value})
-
-                    self.assertEqual(is_mongos, c.is_mongos)
-                    cursor = c.pymongo_test.test.find()
-                    if is_mongos:
-                        self.assertEqual(
-                            {'mode': mongos_mode, 'tags': tag_sets},
-                            cursor._Cursor__query_spec().get('$readPreference'))
-                    else:
-                        self.assertFalse(
-                            '$readPreference' in cursor._Cursor__query_spec())
-        finally:
-            ctx.exit()
-
-    def test_only_secondary_ok_commands_have_read_prefs(self):
-        c = get_client(read_preference=ReadPreference.SECONDARY)
-        ctx = catch_warnings()
-        try:
-            warnings.simplefilter("ignore", UserWarning)
-            is_mongos = utils.is_mongos(c)
-        finally:
-            ctx.exit()
-        if not is_mongos:
-            raise SkipTest("Only mongos have read_prefs added to the spec")
-
-        # Ensure secondary_ok_commands have readPreference
-        for cmd in secondary_ok_commands:
-            if cmd == 'mapreduce':  # map reduce is a special case
-                continue
-            command = SON([(cmd, 1)])
-            cursor = c.pymongo_test["$cmd"].find(command.copy())
-            # White-listed commands also have to be wrapped in $query
-            command = SON([('$query', command)])
-            command['$readPreference'] = {'mode': 'secondary'}
-            self.assertEqual(command, cursor._Cursor__query_spec())
-
-        # map_reduce inline should have read prefs
-        command = SON([('mapreduce', 'test'), ('out', {'inline': 1})])
-        cursor = c.pymongo_test["$cmd"].find(command.copy())
-        # White-listed commands also have to be wrapped in $query
-        command = SON([('$query', command)])
-        command['$readPreference'] = {'mode': 'secondary'}
-        self.assertEqual(command, cursor._Cursor__query_spec())
-
-        # map_reduce that outputs to a collection shouldn't have read prefs
-        command = SON([('mapreduce', 'test'), ('out', {'mrtest': 1})])
-        cursor = c.pymongo_test["$cmd"].find(command.copy())
-        self.assertEqual(command, cursor._Cursor__query_spec())
-
-        # Other commands shouldn't be changed
-        for cmd in ('drop', 'create', 'any-future-cmd'):
-            command = SON([(cmd, 1)])
-            cursor = c.pymongo_test["$cmd"].find(command.copy())
-            self.assertEqual(command, cursor._Cursor__query_spec())
 
 if __name__ == "__main__":
     unittest.main()

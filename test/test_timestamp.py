@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2009-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 """Tests for the Timestamp class."""
 
 import datetime
-import unittest
 import sys
 import copy
 import pickle
@@ -23,6 +22,7 @@ sys.path[0:0] = [""]
 
 from bson.timestamp import Timestamp
 from bson.tz_util import utc
+from test import unittest
 
 
 class TestTimestamp(unittest.TestCase):

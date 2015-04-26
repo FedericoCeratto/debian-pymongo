@@ -9,6 +9,33 @@ Installing / Upgrading
    bson package; doing "pip install bson" or "easy_install bson" installs a
    third-party package that is incompatible with PyMongo.
 
+Optional packages
+-----------------
+
+PyMongo has no required dependencies, but it can take advantage of these
+packages:
+
+- `backports.pbkdf2 <https://pypi.python.org/pypi/backports.pbkdf2/>`_,
+  improves authentication performance with SCRAM-SHA-1, the default
+  authentication mechanism for MongoDB 3.0+. It especially improves
+  performance on Python older than 2.7.8, or on Python 3 before Python 3.4.
+- `pykerberos <https://pypi.python.org/pypi/pykerberos>`_ is required for
+  the GSSAPI authentication mechanism.
+- `Monotime <https://pypi.python.org/pypi/Monotime>`_ adds support for
+  a monotonic clock, which improves reliability in environments
+  where clock adjustments are frequent. Not needed in Python 3.3+.
+- `wincertstore <https://pypi.python.org/pypi/wincertstore>`_ adds support
+  for verifying server SSL certificates using Windows provided CA
+  certificates on older versions of python. Not needed or used with versions
+  of Python 2 beginning with 2.7.9, or versions of Python 3 beginning with
+  3.4.0.
+- `certifi <https://pypi.python.org/pypi/certifi>`_ adds support for
+  using the Mozilla CA bundle with SSL to verify server certificates. Not
+  needed or used with versions of Python 2 beginning with 2.7.9 on any OS,
+  versions of Python 3 beginning with Python 3.4.0 on Windows, or versions
+  of Python 3 beginning with Python 3.2.0 on operating systems other than
+  Windows.
+
 Microsoft Windows
 -----------------
 
@@ -25,7 +52,7 @@ to install pymongo on platforms other than Windows::
 
 To get a specific version of pymongo::
 
-  $ pip install pymongo==2.6.3
+  $ pip install pymongo==2.8
 
 To upgrade using pip::
 
@@ -71,7 +98,7 @@ OSX
 ---
 
 MongoDB, Inc. provides PyMongo in .egg format for Apple provided Python
-versions on OSX 10.7 and newer (usually python 2.5, 2.6, and 2.7). If you want
+versions on OSX 10.7 and newer (usually 2.6 and 2.7). If you want
 to install PyMongo for other Python versions (or from source) you will have to
 install the following to build the C extensions:
 
@@ -86,10 +113,6 @@ Xcode 4 installed. There is a workaround::
   # For Apple-supplied Python2.6 (installed at /usr/bin/python2.6) and
   # some builds from python.org
   $ env ARCHFLAGS='-arch i386 -arch x86_64' python -m easy_install pymongo
-
-  # For 32-bit-only Python (/usr/bin/python2.5) and some builds
-  # from python.org
-  $ env ARCHFLAGS='-arch i386' python -m easy_install pymongo
 
 See `http://bugs.python.org/issue11623 <http://bugs.python.org/issue11623>`_
 for a more detailed explanation.
@@ -158,12 +181,6 @@ For Python 3.3 and newer install Visual C++ 2010 Express.
 
 For Python 2.6 through 3.2 install Visual C++ 2008 Express SP1.
 
-For Python 2.4 or 2.5 you must install
-`MingW32 <http://www.mingw.org/wiki/InstallationHOWTOforMinGW>`_ then run the
-following command to install::
-
-  python setup.py build -c mingw32 install
-
 .. _install-no-c:
 
 Installing Without C Extensions
@@ -192,7 +209,7 @@ PyMongo source directory::
   $ python setup.py bdist_egg
 
 The egg package can be found in the dist/ subdirectory. The file name will
-resemble “pymongo-2.6.3-py2.7-linux-x86_64.egg” but may have a different name
+resemble “pymongo-3.0-py2.7-linux-x86_64.egg” but may have a different name
 depending on your platform and the version of python you use to compile.
 
 .. warning::
@@ -205,20 +222,20 @@ depending on your platform and the version of python you use to compile.
 Copy this file to the target system and issue the following command to install the
 package::
 
-  $ sudo easy_install pymongo-2.6.3-py2.7-linux-x86_64.egg
+  $ sudo easy_install pymongo-3.0-py2.7-linux-x86_64.egg
 
-Installing a release candidate
-------------------------------
+Installing a beta or release candidate
+--------------------------------------
 
-MongoDB, Inc. may occasionally tag a release candidate for testing by the
-community before final release. These releases will not be uploaded to pypi
+MongoDB, Inc. may occasionally tag a beta or release candidate for testing by
+the community before final release. These releases will not be uploaded to pypi
 but can be found on the
 `github tags page <https://github.com/mongodb/mongo-python-driver/tags>`_.
 They can be installed by passing the full URL for the tag to pip::
 
-  $ pip install https://github.com/mongodb/mongo-python-driver/archive/2.8rc2.tar.gz
+  $ pip install https://github.com/mongodb/mongo-python-driver/archive/3.0rc1.tar.gz
 
 or easy_install::
 
-  $ easy_install https://github.com/mongodb/mongo-python-driver/archive/2.8rc2.tar.gz
+  $ easy_install https://github.com/mongodb/mongo-python-driver/archive/3.0rc1.tar.gz
 

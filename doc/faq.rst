@@ -6,7 +6,7 @@ Frequently Asked Questions
 Is PyMongo thread-safe?
 -----------------------
 
-PyMongo is thread-safe and even provides built-in connection pooling
+PyMongo is thread-safe and provides built-in connection pooling
 for threaded applications.
 
 .. _connection-pooling:
@@ -15,21 +15,18 @@ How does connection pooling work in PyMongo?
 --------------------------------------------
 
 Every :class:`~pymongo.mongo_client.MongoClient` instance has a built-in
-connection pool. The pool begins with one open connection. If necessary to
-support concurrent access to MongoDB from multiple threads in your application,
-the client opens new connections on demand.
+connection pool. The client opens sockets on demand to support the number
+of concurrent MongoDB operations your application requires. There is no
+thread-affinity for sockets.
 
-By default, there is no thread-affinity for connections.
+The client instance opens one additional socket per server in your MongoDB
+topology for monitoring the server's state.
 
-In versions before 2.6, the default ``max_pool_size`` was 10, and it did not
-actually bound the number of open connections; it only determined the number
-of connections that would be kept open when no longer in use.
-
-Starting with PyMongo 2.6, the size of the connection pool is capped at
-``max_pool_size``, which now defaults to 100. When a thread in your application
-begins an operation on MongoDB, if all other connections are in use and the
-pool has reached its maximum, the thread pauses, waiting for a connection to
-be returned to the pool by another thread.
+The size of each connection pool is capped at ``maxPoolSize``, which defaults
+to 100. When a thread in your application begins an operation on MongoDB, if
+all other sockets are in use and the pool has reached its maximum, the
+thread pauses, waiting for a socket to be returned to the pool by another
+thread.
 
 The default configuration for a :class:`~pymongo.mongo_client.MongoClient`
 works for most applications::
@@ -41,50 +38,44 @@ operations. It is a common mistake to create a new client for each request,
 which is very inefficient.
 
 To support extremely high numbers of concurrent MongoDB operations within one
-process, increase ``max_pool_size``::
+process, increase ``maxPoolSize``::
 
-    client = MongoClient(host, port, max_pool_size=200)
+    client = MongoClient(host, port, maxPoolSize=200)
 
 ... or make it unbounded::
 
-    client = MongoClient(host, port, max_pool_size=None)
+    client = MongoClient(host, port, maxPoolSize=None)
 
-By default, any number of threads are allowed to wait for connections to become
+By default, any number of threads are allowed to wait for sockets to become
 available, and they can wait any length of time. Override ``waitQueueMultiple``
 to cap the number of waiting threads. E.g., to keep the number of waiters less
 than or equal to 500::
 
-    client = MongoClient(host, port, max_pool_size=50, waitQueueMultiple=10)
+    client = MongoClient(host, port, maxPoolSize=50, waitQueueMultiple=10)
 
-When 500 threads are waiting for a socket, the 501st that needs a connection
+When 500 threads are waiting for a socket, the 501st that needs a socket
 raises :exc:`~pymongo.errors.ExceededMaxWaiters`. Use this option to
 bound the amount of queueing in your application during a load spike, at the
 cost of additional exceptions.
 
 Once the pool reaches its max size, additional threads are allowed to wait
-indefinitely for connections to become available, unless you set
+indefinitely for sockets to become available, unless you set
 ``waitQueueTimeoutMS``::
 
     client = MongoClient(host, port, waitQueueTimeoutMS=100)
 
-A thread that waits more than 100ms (in this example) for a connection raises
+A thread that waits more than 100ms (in this example) for a socket raises
 :exc:`~pymongo.errors.ConnectionFailure`. Use this option if it is more
 important to bound the duration of operations during a load spike than it is to
 complete every operation.
 
-When :meth:`~pymongo.mongo_client.MongoClient.disconnect` is called by any thread,
-all sockets are closed.
-
-:class:`~pymongo.mongo_replica_set_client.MongoReplicaSetClient` maintains one
-connection pool per server in your replica set.
-
-.. seealso:: :doc:`examples/requests`
+When :meth:`~pymongo.mongo_client.MongoClient.close` is called by any
+thread, all sockets are closed.
 
 Does PyMongo support Python 3?
 ------------------------------
 
-Starting with version 2.2 PyMongo supports Python 3.x where x >= 1. See the
-:doc:`python3` for details.
+PyMongo supports Python 3.x where x >= 2. See the :doc:`python3` for details.
 
 Does PyMongo support asynchronous frameworks like Gevent, Tornado, or Twisted?
 ------------------------------------------------------------------------------
@@ -98,6 +89,122 @@ For `Twisted <http://twistedmatrix.com/>`_, see `TxMongo
 <http://github.com/fiorix/mongo-async-python-driver>`_. Compared to PyMongo,
 TxMongo is less stable, lacks features, and is less actively maintained.
 
+Key order in subdocuments -- why does my query work in the shell but not PyMongo?
+---------------------------------------------------------------------------------
+
+.. testsetup:: key-order
+
+  from bson.son import SON
+  from pymongo.mongo_client import MongoClient
+
+  collection = MongoClient().test.collection
+  collection.drop()
+  collection.insert_one({'_id': 1.0,
+                         'subdocument': SON([('b', 1.0), ('a', 1.0)])})
+
+The key-value pairs in a BSON document can have any order (except that ``_id``
+is always first). The mongo shell preserves key order when reading and writing
+data. Observe that "b" comes before "a" when we create the document and when it
+is displayed:
+
+.. code-block:: javascript
+
+  > // mongo shell.
+  > db.collection.insert( { "_id" : 1, "subdocument" : { "b" : 1, "a" : 1 } } )
+  WriteResult({ "nInserted" : 1 })
+  > db.collection.find()
+  { "_id" : 1, "subdocument" : { "b" : 1, "a" : 1 } }
+
+PyMongo represents BSON documents as Python dicts by default, and the order
+of keys in dicts is not defined. That is, a dict declared with the "a" key
+first is the same, to Python, as one with "b" first:
+
+.. doctest:: key-order
+
+  >>> print {'a': 1.0, 'b': 1.0}
+  {'a': 1.0, 'b': 1.0}
+  >>> print {'b': 1.0, 'a': 1.0}
+  {'a': 1.0, 'b': 1.0}
+
+Therefore, Python dicts are not guaranteed to show keys in the order they are
+stored in BSON. Here, "a" is shown before "b":
+
+.. doctest:: key-order
+
+  >>> print collection.find_one()
+  {u'_id': 1.0, u'subdocument': {u'a': 1.0, u'b': 1.0}}
+
+To preserve order when reading BSON, use the :class:`~bson.son.SON` class,
+which is a dict that remembers its key order. First, get a handle to the
+collection, configured to use :class:`~bson.son.SON` instead of dict:
+
+.. doctest:: key-order
+
+  >>> from bson import CodecOptions, SON
+  >>> opts = CodecOptions(document_class=SON)
+  >>> opts  # doctest: +NORMALIZE_WHITESPACE
+  CodecOptions(document_class=<class 'bson.son.SON'>,
+               tz_aware=False,
+               uuid_representation=PYTHON_LEGACY)
+  >>> collection_son = collection.with_options(codec_options=opts)
+
+Now, documents and subdocuments in query results are represented with
+:class:`~bson.son.SON` objects:
+
+.. doctest:: key-order
+
+  >>> print collection_son.find_one()
+  SON([(u'_id', 1.0), (u'subdocument', SON([(u'b', 1.0), (u'a', 1.0)]))])
+
+The subdocument's actual storage layout is now visible: "b" is before "a".
+
+Because a dict's key order is not defined, you cannot predict how it will be
+serialized **to** BSON. But MongoDB considers subdocuments equal only if their
+keys have the same order. So if you use a dict to query on a subdocument it may
+not match:
+
+.. doctest:: key-order
+
+  >>> collection.find_one({'subdocument': {'a': 1.0, 'b': 1.0}}) is None
+  True
+
+Swapping the key order in your query makes no difference:
+
+.. doctest:: key-order
+
+  >>> collection.find_one({'subdocument': {'b': 1.0, 'a': 1.0}}) is None
+  True
+
+... because, as we saw above, Python considers the two dicts the same.
+
+There are two solutions. First, you can match the subdocument field-by-field:
+
+.. doctest:: key-order
+
+  >>> collection.find_one({'subdocument.a': 1.0,
+  ...                      'subdocument.b': 1.0})
+  {u'_id': 1.0, u'subdocument': {u'a': 1.0, u'b': 1.0}}
+
+The query matches any subdocument with an "a" of 1.0 and a "b" of 1.0,
+regardless of the order you specify them in Python or the order they are stored
+in BSON. Additionally, this query now matches subdocuments with additional
+keys besides "a" and "b", whereas the previous query required an exact match.
+
+The second solution is to use a :class:`~bson.son.SON` to specify the key order:
+
+.. doctest:: key-order
+
+  >>> query = {'subdocument': SON([('b', 1.0), ('a', 1.0)])}
+  >>> collection.find_one(query)
+  {u'_id': 1.0, u'subdocument': {u'a': 1.0, u'b': 1.0}}
+
+The key order you use when you create a :class:`~bson.son.SON` is preserved
+when it is serialized to BSON and used as a query. Thus you can create a
+subdocument that exactly matches the subdocument in the collection.
+
+.. seealso:: `MongoDB Manual entry on subdocument matching
+   <http://docs.mongodb.org/manual/tutorial/query-documents/#embedded-documents>`_.
+
 What does *CursorNotFound* cursor id not valid at server mean?
 --------------------------------------------------------------
 Cursors in MongoDB can timeout on the server if they've been open for
@@ -108,7 +215,7 @@ raised when attempting to iterate the cursor.
 How do I change the timeout value for cursors?
 ----------------------------------------------
 MongoDB doesn't support custom timeouts for cursors, but cursor
-timeouts can be turned off entirely. Pass ``timeout=False`` to
+timeouts can be turned off entirely. Pass ``no_cursor_timeout=True`` to
 :meth:`~pymongo.collection.Collection.find`.
 
 How can I store :mod:`decimal.Decimal` instances?
@@ -260,32 +367,7 @@ The :mod:`json` module won't work out of the box with all documents
 from PyMongo as PyMongo supports some special types (like
 :class:`~bson.objectid.ObjectId` and :class:`~bson.dbref.DBRef`)
 that are not supported in JSON. We've added some utilities for working
-with :mod:`json` and :mod:`simplejson` in the
-:mod:`~bson.json_util` module.
-
-.. _year-2038-problem:
-
-Why do I get an error for dates on or after 2038?
--------------------------------------------------
-On Unix systems, dates are represented as seconds from 1 January 1970 and
-usually stored in the C :mod:`time_t` type. On most 32-bit operating systems
-:mod:`time_t` is a signed 4 byte integer which means it can't handle dates
-after 19 January 2038; this is known as the `year 2038 problem
-<http://en.wikipedia.org/wiki/Year_2038_problem>`_. Neither MongoDB nor Python
-uses :mod:`time_t` to represent dates internally so do not suffer from this
-problem, but Python's :mod:`datetime.datetime.fromtimestamp()` does, which
-means it is susceptible.
-
-Previous to version 2.0, PyMongo used :mod:`datetime.datetime.fromtimestamp()`
-in its pure Python :mod:`bson` module. Therefore, on 32-bit systems you may
-get an error retrieving dates after 2038 from MongoDB using older versions
-of PyMongo with the pure Python version of :mod:`bson`.
-
-This problem was fixed in the pure Python implementation of :mod:`bson` by
-commit ``b19ab334af2a29353529`` (8 June 2011 - PyMongo 2.0).
-
-The C implementation of :mod:`bson` also used to suffer from this problem but
-it was fixed in commit ``566bc9fb7be6f9ab2604`` (10 May 2010 - PyMongo 1.7).
+with JSON in the :mod:`~bson.json_util` module.
 
 Why do I get OverflowError decoding dates stored by another language's driver?
 ------------------------------------------------------------------------------
@@ -307,5 +389,5 @@ out documents with values outside of the range supported by
 Another option, assuming you don't need the datetime field, is to filter out
 just that field::
 
-  >>> cur = coll.find({}, fields={'dt': False})
+  >>> cur = coll.find({}, projection={'dt': False})
 

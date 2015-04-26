@@ -1,4 +1,4 @@
-# Copyright 2013-2014 MongoDB, Inc.
+# Copyright 2013-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,52 +14,85 @@
 
 """Tools for mocking parts of PyMongo to test other parts."""
 
-import socket
+import contextlib
+from functools import partial
+import weakref
 
 from pymongo import common
-from pymongo import MongoClient, MongoReplicaSetClient
-from pymongo.pool import Pool
+from pymongo import MongoClient
+from pymongo.errors import AutoReconnect, NetworkTimeout
+from pymongo.ismaster import IsMaster
+from pymongo.monitor import Monitor
+from pymongo.pool import Pool, PoolOptions
+from pymongo.server_description import ServerDescription
 
 from test import host as default_host, port as default_port
-from test.utils import my_partial
 
 
 class MockPool(Pool):
     def __init__(self, client, pair, *args, **kwargs):
-        # MockPool gets a 'client' arg, regular pools don't.
-        self.client = client
+        # MockPool gets a 'client' arg, regular pools don't. Weakref it to
+        # avoid cycle with __del__, causing ResourceWarnings in Python 3.3.
+        self.client = weakref.proxy(client)
         self.mock_host, self.mock_port = pair
 
         # Actually connect to the default server.
-        Pool.__init__(
-            self,
-            pair=(default_host, default_port),
-            max_size=None,
-            net_timeout=None,
-            conn_timeout=20,
-            use_ssl=False,
-            use_greenlets=False)
+        Pool.__init__(self,
+                      (default_host, default_port),
+                      PoolOptions(connect_timeout=20))
 
-    def get_socket(self, force=False):
+    @contextlib.contextmanager
+    def get_socket(self, all_credentials, checkout=False):
         client = self.client
         host_and_port = '%s:%s' % (self.mock_host, self.mock_port)
         if host_and_port in client.mock_down_hosts:
-            raise socket.error('mock error')
+            raise AutoReconnect('mock error')
 
         assert host_and_port in (
             client.mock_standalones
             + client.mock_members
             + client.mock_mongoses), "bad host: %s" % host_and_port
 
-        sock_info = Pool.get_socket(self, force)
-        sock_info.mock_host = self.mock_host
-        sock_info.mock_port = self.mock_port
-        return sock_info
+        with Pool.get_socket(self, all_credentials) as sock_info:
+            sock_info.mock_host = self.mock_host
+            sock_info.mock_port = self.mock_port
+            yield sock_info
 
 
-class MockClientBase(object):
-    def __init__(self, standalones, members, mongoses, config):
-        """standalones, etc., are like ['a:1', 'b:2']"""
+class MockMonitor(Monitor):
+    def __init__(
+            self,
+            client,
+            server_description,
+            topology,
+            pool,
+            topology_settings):
+        # MockMonitor gets a 'client' arg, regular monitors don't.
+        self.client = client
+        Monitor.__init__(
+            self,
+            server_description,
+            topology,
+            pool,
+            topology_settings)
+
+    def _check_once(self):
+        address = self._server_description.address
+        response, rtt = self.client.mock_is_master('%s:%d' % address)
+        return ServerDescription(address, IsMaster(response), rtt)
+
+
+class MockClient(MongoClient):
+    def __init__(
+            self, standalones, members, mongoses, ismaster_hosts=None,
+            *args, **kwargs):
+        """A MongoClient connected to the default server, with a mock topology.
+
+        standalones, members, mongoses determine the configuration of the
+        topology. They are formatted like ['a:1', 'b:2']. ismaster_hosts
+        provides an alternative host list for the server's mocked ismaster
+        response; see test_connect_with_internal_ips.
+        """
         self.mock_standalones = standalones[:]
         self.mock_members = members[:]
 
@@ -68,8 +101,8 @@ class MockClientBase(object):
         else:
             self.mock_primary = None
 
-        if config is not None:
-            self.mock_ismaster_hosts = config
+        if ismaster_hosts is not None:
+            self.mock_ismaster_hosts = ismaster_hosts
         else:
             self.mock_ismaster_hosts = members[:]
 
@@ -83,6 +116,14 @@ class MockClientBase(object):
 
         # Hostname -> max write batch size
         self.mock_max_write_batch_sizes = {}
+
+        # Hostname -> round trip time
+        self.mock_rtts = {}
+
+        kwargs['_pool_class'] = partial(MockPool, self)
+        kwargs['_monitor_class'] = partial(MockMonitor, self)
+
+        super(MockClient, self).__init__(*args, **kwargs)
 
     def kill_host(self, host):
         """Host is like 'a:1'."""
@@ -99,6 +140,7 @@ class MockClientBase(object):
         self.mock_max_write_batch_sizes[host] = size
 
     def mock_is_master(self, host):
+        """Return mock ismaster response (a dict) and round trip time."""
         min_wire_version, max_wire_version = self.mock_wire_versions.get(
             host,
             (common.MIN_WIRE_VERSION, common.MAX_WIRE_VERSION))
@@ -106,22 +148,25 @@ class MockClientBase(object):
         max_write_batch_size = self.mock_max_write_batch_sizes.get(
             host, common.MAX_WRITE_BATCH_SIZE)
 
+        rtt = self.mock_rtts.get(host, 0)
+
         # host is like 'a:1'.
         if host in self.mock_down_hosts:
-            raise socket.timeout('mock timeout')
+            raise NetworkTimeout('mock timeout')
 
-        if host in self.mock_standalones:
-            return {
+        elif host in self.mock_standalones:
+            response = {
+                'ok': 1,
                 'ismaster': True,
                 'minWireVersion': min_wire_version,
                 'maxWireVersion': max_wire_version,
                 'maxWriteBatchSize': max_write_batch_size}
-
-        if host in self.mock_members:
+        elif host in self.mock_members:
             ismaster = (host == self.mock_primary)
 
             # Simulate a replica set member.
             response = {
+                'ok': 1,
                 'ismaster': ismaster,
                 'secondary': not ismaster,
                 'setName': 'rs',
@@ -132,63 +177,22 @@ class MockClientBase(object):
 
             if self.mock_primary:
                 response['primary'] = self.mock_primary
-
-            return response
-
-        if host in self.mock_mongoses:
-            return {
+        elif host in self.mock_mongoses:
+            response = {
+                'ok': 1,
                 'ismaster': True,
                 'minWireVersion': min_wire_version,
                 'maxWireVersion': max_wire_version,
                 'msg': 'isdbgrid',
                 'maxWriteBatchSize': max_write_batch_size}
+        else:
+            # In test_internal_ips(), we try to connect to a host listed
+            # in ismaster['hosts'] but not publicly accessible.
+            raise AutoReconnect('Unknown host: %s' % host)
 
-        # In test_internal_ips(), we try to connect to a host listed
-        # in ismaster['hosts'] but not publicly accessible.
-        raise socket.error('Unknown host: %s' % host)
+        return response, rtt
 
-    def simple_command(self, sock_info, dbname, spec):
-        # __simple_command is also used for authentication, but in this
-        # test it's only used for ismaster.
-        assert spec == {'ismaster': 1}
-        response = self.mock_is_master(
-            '%s:%s' % (sock_info.mock_host, sock_info.mock_port))
-
-        ping_time = 10
-        return response, ping_time
-
-
-class MockClient(MockClientBase, MongoClient):
-    def __init__(
-        self, standalones, members, mongoses, ismaster_hosts=None,
-        *args, **kwargs
-    ):
-        MockClientBase.__init__(
-            self, standalones, members, mongoses, ismaster_hosts)
-
-        kwargs['_pool_class'] = my_partial(MockPool, self)
-        MongoClient.__init__(self, *args, **kwargs)
-
-    def _MongoClient__simple_command(self, sock_info, dbname, spec):
-        return self.simple_command(sock_info, dbname, spec)
-
-
-class MockReplicaSetClient(MockClientBase, MongoReplicaSetClient):
-    def __init__(
-        self, standalones, members, mongoses, ismaster_hosts=None,
-        *args, **kwargs
-    ):
-        MockClientBase.__init__(
-            self, standalones, members, mongoses, ismaster_hosts)
-
-        kwargs['_pool_class'] = my_partial(MockPool, self)
-        MongoReplicaSetClient.__init__(self, *args, **kwargs)
-
-    def _MongoReplicaSetClient__is_master(self, host):
-        response = self.mock_is_master('%s:%s' % host)
-        connection_pool = MockPool(self, host)
-        ping_time = 10
-        return response, connection_pool, ping_time
-
-    def _MongoReplicaSetClient__simple_command(self, sock_info, dbname, spec):
-        return self.simple_command(sock_info, dbname, spec)
+    def _process_kill_cursors_queue(self):
+        # Avoid the background thread causing races, e.g. a surprising
+        # reconnect while we're trying to test a disconnected client.
+        pass

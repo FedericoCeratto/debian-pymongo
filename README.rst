@@ -80,13 +80,37 @@ Dependencies
 ============
 
 The PyMongo distribution is supported and tested on Python 2.x (where
-x >= 4) and Python 3.x (where x >= 1). PyMongo versions <= 1.3 also
-supported Python 2.3, but that is no longer supported.
+x >= 6) and Python 3.x (where x >= 2). PyMongo versions before 3.0 also
+support Python 2.4, 2.5, and 3.1.
+
+Optional packages:
+
+- `backports.pbkdf2 <https://pypi.python.org/pypi/backports.pbkdf2/>`_,
+  improves authentication performance with SCRAM-SHA-1, the default
+  authentication mechanism for MongoDB 3.0+. It especially improves
+  performance on Python older than 2.7.8, or on Python 3 before Python 3.4.
+- `pykerberos <https://pypi.python.org/pypi/pykerberos>`_ is required for
+  the GSSAPI authentication mechanism.
+- `Monotime <https://pypi.python.org/pypi/Monotime>`_ adds support for
+  a monotonic clock, which improves reliability in environments
+  where clock adjustments are frequent. Not needed in Python 3.3+.
+- `wincertstore <https://pypi.python.org/pypi/wincertstore>`_ adds support
+  for verifying server SSL certificates using Windows provided CA
+  certificates on older versions of python. Not needed or used with versions
+  of Python 2 beginning with 2.7.9, or versions of Python 3 beginning with
+  3.4.0.
+- `certifi <https://pypi.python.org/pypi/certifi>`_ adds support for
+  using the Mozilla CA bundle with SSL to verify server certificates. Not
+  needed or used with versions of Python 2 beginning with 2.7.9 on any OS,
+  versions of Python 3 beginning with Python 3.4.0 on Windows, or versions
+  of Python 3 beginning with Python 3.2.0 on operating systems other than
+  Windows.
+
 
 Additional dependencies are:
 
 - (to generate documentation) sphinx_
-- (to auto-discover tests) `nose <http://somethingaboutorange.com/mrl/projects/nose/>`_
+- (to run the tests under Python 2.6) unittest2_
 
 Examples
 ========
@@ -101,11 +125,11 @@ Here's a basic example (for more see the *examples* section of the docs):
   u'test'
   >>> db.my_collection
   Collection(Database(MongoClient('localhost', 27017), u'test'), u'my_collection')
-  >>> db.my_collection.save({"x": 10})
+  >>> db.my_collection.insert_one({"x": 10}).inserted_id
   ObjectId('4aba15ebe23f6b53b0000000')
-  >>> db.my_collection.save({"x": 8})
+  >>> db.my_collection.insert_one({"x": 8}).inserted_id
   ObjectId('4aba160ee23f6b543e000000')
-  >>> db.my_collection.save({"x": 11})
+  >>> db.my_collection.insert_one({"x": 11}).inserted_id
   ObjectId('4aba160ee23f6b543e000002')
   >>> db.my_collection.find_one()
   {u'x': 10, u'_id': ObjectId('4aba15ebe23f6b53b0000000')}
@@ -137,9 +161,17 @@ setup.py doc**. Generated documentation can be found in the
 Testing
 =======
 
-The easiest way to run the tests is to install `nose
-<http://somethingaboutorange.com/mrl/projects/nose/>`_ (**easy_install
-nose**) and run **nosetests** or **python setup.py test** in the root
-of the distribution. Tests are located in the *test/* directory.
+The easiest way to run the tests is to run **python setup.py test** in
+the root of the distribution. Note that you will need unittest2_ to
+run the tests under Python 2.6.
+
+To verify that PyMongo works with Gevent's monkey-patching::
+
+    $ python green_framework_test.py gevent
+
+Or with Eventlet's::
+
+    $ python green_framework_test.py eventlet
 
 .. _sphinx: http://sphinx.pocoo.org/
+.. _unittest2: https://pypi.python.org/pypi/unittest2

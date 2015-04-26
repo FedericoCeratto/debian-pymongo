@@ -1,4 +1,4 @@
-# Copyright 2012-2014 MongoDB, Inc.
+# Copyright 2012-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,12 +16,23 @@
 """
 
 import sys
-import urllib2
-import thread
 import threading
 import time
 
 from optparse import OptionParser
+
+try:
+    from urllib2 import urlopen
+except ImportError:
+    # Python 3.
+    from urllib.request import urlopen
+
+
+try:
+    import thread
+except ImportError:
+    # Python 3.
+    import _thread as thread
 
 
 def parse_args():
@@ -65,7 +76,7 @@ def parse_args():
 
 
 def get(url):
-    urllib2.urlopen(url).read().strip()
+    urlopen(url).read().strip()
 
 
 class URLGetterThread(threading.Thread):
@@ -84,8 +95,8 @@ class URLGetterThread(threading.Thread):
         for i in range(self.nrequests_per_thread):
             try:
                 get(url)
-            except Exception, e:
-                print e
+            except Exception as e:
+                print(e)
 
                 if not options.continue_:
                     thread.interrupt_main()
@@ -93,15 +104,14 @@ class URLGetterThread(threading.Thread):
 
                 self.errors += 1
 
-            URLGetterThread.counter_lock.acquire()
-            URLGetterThread.counter += 1
-            counter = URLGetterThread.counter
-            URLGetterThread.counter_lock.release()
+            with URLGetterThread.counter_lock:
+                URLGetterThread.counter += 1
+                counter = URLGetterThread.counter
 
             should_print = options.verbose and not counter % 1000
 
             if should_print:
-                print counter
+                print(counter)
 
 
 def main(options, mode, url):
@@ -130,33 +140,33 @@ def main(options, mode, url):
         errors = sum([t.errors for t in threads])
         nthreads_with_errors = len([t for t in threads if t.errors])
         if nthreads_with_errors:
-            print '%d threads had errors! %d errors in total' % (
-                nthreads_with_errors, errors)
+            print('%d threads had errors! %d errors in total' % (
+                nthreads_with_errors, errors))
     else:
         assert mode == 'serial'
         if options.verbose:
-            print 'Getting %s %s times in one thread' % (
+            print('Getting %s %s times in one thread' % (
                 url, options.nrequests
-            )
+            ))
 
         for i in range(1, options.nrequests + 1):
             try:
                 get(url)
-            except Exception, e:
-                print e
+            except Exception as e:
+                print(e)
                 if not options.continue_:
                     sys.exit(1)
 
                 errors += 1
 
             if options.verbose and not i % 1000:
-                print i
+                print(i)
 
         if errors:
-            print '%d errors!' % errors
+            print('%d errors!' % errors)
 
     if options.verbose:
-        print 'Completed in %.2f seconds' % (time.time() - start_time)
+        print('Completed in %.2f seconds' % (time.time() - start_time))
 
     if errors:
         # Failure

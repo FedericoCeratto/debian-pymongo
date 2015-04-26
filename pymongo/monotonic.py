@@ -1,4 +1,4 @@
-# Copyright 2009-2014 MongoDB, Inc.
+# Copyright 2014-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Test the errors module."""
+"""Time. Monotonic if possible.
+"""
 
-import unittest
-import sys
-sys.path[0:0] = [""]
+__all__ = ['time']
 
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
+try:
+    # Patches standard time module.
+    # From https://pypi.python.org/pypi/Monotime.
+    import monotime
+except ImportError:
+    pass
 
-
-class TestErrors(unittest.TestCase):
-
-    def test_base_exception(self):
-        self.assertRaises(PyMongoError, MongoClient, port=0)
-
-
-if __name__ == '__main__':
-    unittest.main()
+try:
+    # Monotime or Python 3.3+.
+    from time import monotonic as time
+except ImportError:
+    # Not monotonic.
+    from time import time

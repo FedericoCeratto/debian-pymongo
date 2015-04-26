@@ -1,4 +1,4 @@
-# Copyright 2014-2014 MongoDB, Inc.
+# Copyright 2014-2015 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,13 +18,19 @@
 """
 
 from bson.objectid import ObjectId
+from bson.py3compat import u
 from bson.son import SON
+from pymongo.common import (validate_is_mapping,
+                            validate_is_mutable_mapping,
+                            validate_ok_for_replace,
+                            validate_ok_for_update)
 from pymongo.errors import (BulkWriteError,
                             DocumentTooLarge,
                             InvalidOperation,
                             OperationFailure)
 from pymongo.message import (_INSERT, _UPDATE, _DELETE,
-                             insert, _do_batched_write_command)
+                             _do_batched_write_command)
+from pymongo.write_concern import WriteConcern
 
 
 _DELETE_ALL = 0
@@ -36,6 +42,16 @@ _UNKNOWN_ERROR = 8
 _WRITE_CONCERN_ERROR = 64
 
 _COMMANDS = ('insert', 'update', 'delete')
+
+
+# These string literals are used when we create fake server return
+# documents client side. We use unicode literals in python 2.x to
+# match the actual return values from the server.
+_UID = u("_id")
+_UCODE = u("code")
+_UERRMSG = u("errmsg")
+_UINDEX = u("index")
+_UOP = u("op")
 
 
 class _Run(object):
@@ -72,10 +88,10 @@ def _make_error(index, code, errmsg, operation):
     """Create and return an error document.
     """
     return {
-        u"index": index,
-        u"code": code,
-        u"errmsg": errmsg,
-        u"op": operation
+        _UINDEX: index,
+        _UCODE: code,
+        _UERRMSG: errmsg,
+        _UOP: operation
     }
 
 
@@ -98,13 +114,11 @@ def _merge_legacy(run, full_result, result, index):
                 error["errInfo"] = result["errInfo"]
             full_result["writeErrors"].append(error)
             return
-
     if run.op_type == _INSERT:
         full_result['nInserted'] += 1
-
     elif run.op_type == _UPDATE:
         if "upserted" in result:
-            doc = {u"index": run.index(index), u"_id": result["upserted"]}
+            doc = {_UINDEX: run.index(index), _UID: result["upserted"]}
             full_result["upserted"].append(doc)
             full_result['nUpserted'] += affected
         # Versions of MongoDB before 2.6 don't return the _id for an
@@ -114,7 +128,7 @@ def _merge_legacy(run, full_result, result, index):
             # If _id is in both the update document *and* the query spec
             # the update document _id takes precedence.
             _id = op['u'].get('_id', op['q'].get('_id'))
-            doc = {u"index": run.index(index), u"_id": _id}
+            doc = {_UINDEX: run.index(index), _UID: _id}
             full_result["upserted"].append(doc)
             full_result['nUpserted'] += affected
         else:
@@ -148,7 +162,7 @@ def _merge_command(run, full_result, results):
                 else:
                     n_upserted = 1
                     index = run.index(offset)
-                    doc = {u"index": index, u"_id": upserted}
+                    doc = {_UINDEX: index, _UID: upserted}
                     full_result["upserted"].append(doc)
                 full_result["nUpserted"] += n_upserted
                 full_result["nMatched"] += (affected - n_upserted)
@@ -170,7 +184,7 @@ def _merge_command(run, full_result, results):
                 idx = doc["index"] + offset
                 doc["index"] = run.index(idx)
                 # Add the failed operation to the error document.
-                doc[u"op"] = run.ops[idx]
+                doc[_UOP] = run.ops[idx]
             full_result["writeErrors"].extend(write_errors)
 
         wc_error = result.get("writeConcernError")
@@ -194,8 +208,7 @@ class _Bulk(object):
     def add_insert(self, document):
         """Add an insert document to the list of ops.
         """
-        if not isinstance(document, dict):
-            raise TypeError('document must be an instance of dict')
+        validate_is_mutable_mapping("document", document)
         # Generate ObjectId client side.
         if '_id' not in document:
             document['_id'] = ObjectId()
@@ -204,14 +217,7 @@ class _Bulk(object):
     def add_update(self, selector, update, multi=False, upsert=False):
         """Create an update document and add it to the list of ops.
         """
-        if not isinstance(update, dict):
-            raise TypeError('update must be an instance of dict')
-        # Update can not be {}
-        if not update:
-            raise ValueError('update only works with $ operators')
-        first = iter(update).next()
-        if not first.startswith('$'):
-            raise ValueError('update only works with $ operators')
+        validate_ok_for_update(update)
         cmd = SON([('q', selector), ('u', update),
                    ('multi', multi), ('upsert', upsert)])
         self.ops.append((_UPDATE, cmd))
@@ -219,13 +225,7 @@ class _Bulk(object):
     def add_replace(self, selector, replacement, upsert=False):
         """Create a replace document and add it to the list of ops.
         """
-        if not isinstance(replacement, dict):
-            raise TypeError('replacement must be an instance of dict')
-        # Replacement can be {}
-        if replacement:
-            first = iter(replacement).next()
-            if first.startswith('$'):
-                raise ValueError('replacement can not include $ operators')
+        validate_ok_for_replace(replacement)
         cmd = SON([('q', selector), ('u', replacement),
                    ('multi', False), ('upsert', upsert)])
         self.ops.append((_UPDATE, cmd))
@@ -262,11 +262,9 @@ class _Bulk(object):
             if run.ops:
                 yield run
 
-    def execute_command(self, generator, write_concern):
+    def execute_command(self, sock_info, generator, write_concern):
         """Execute using write commands.
         """
-        uuid_subtype = self.collection.uuid_subtype
-        client = self.collection.database.connection
         # nModified is only reported for write commands, not legacy ops.
         full_result = {
             "writeErrors": [],
@@ -281,11 +279,12 @@ class _Bulk(object):
         for run in generator:
             cmd = SON([(_COMMANDS[run.op_type], self.collection.name),
                        ('ordered', self.ordered)])
-            if write_concern:
-                cmd['writeConcern'] = write_concern
+            if write_concern.document:
+                cmd['writeConcern'] = write_concern.document
 
-            results = _do_batched_write_command(self.namespace,
-                run.op_type, cmd, run.ops, True, uuid_subtype, client)
+            results = _do_batched_write_command(
+                self.namespace, run.op_type, cmd,
+                run.ops, True, self.collection.codec_options, sock_info)
 
             _merge_command(run, full_result, results)
             # We're supposed to continue if errors are
@@ -300,54 +299,45 @@ class _Bulk(object):
             raise BulkWriteError(full_result)
         return full_result
 
-    def execute_no_results(self, generator):
+    def execute_no_results(self, sock_info, generator):
         """Execute all operations, returning no results (w=0).
         """
         coll = self.collection
-        w_value = 0
         # If ordered is True we have to send GLE or use write
         # commands so we can abort on the first error.
-        if self.ordered:
-            w_value = 1
+        write_concern = WriteConcern(w=int(self.ordered))
 
         for run in generator:
             try:
                 if run.op_type == _INSERT:
-                    coll.insert(run.ops,
-                                continue_on_error=not self.ordered,
-                                w=w_value)
+                    coll._insert(sock_info,
+                                 run.ops,
+                                 self.ordered,
+                                 write_concern=write_concern)
+                elif run.op_type == _UPDATE:
+                    for operation in run.ops:
+                        doc = operation['u']
+                        check_keys = True
+                        if doc and next(iter(doc)).startswith('$'):
+                            check_keys = False
+                        coll._update(sock_info,
+                                     operation['q'],
+                                     doc,
+                                     operation['upsert'],
+                                     check_keys,
+                                     operation['multi'],
+                                     write_concern=write_concern)
                 else:
                     for operation in run.ops:
-                        try:
-                            if run.op_type == _UPDATE:
-                                coll.update(operation['q'],
-                                            operation['u'],
-                                            upsert=operation['upsert'],
-                                            multi=operation['multi'],
-                                            w=w_value)
-                            else:
-                                coll.remove(operation['q'],
-                                            multi=(not operation['limit']),
-                                            w=w_value)
-                        except OperationFailure:
-                            if self.ordered:
-                                return
+                        coll._delete(sock_info,
+                                     operation['q'],
+                                     not operation['limit'],
+                                     write_concern)
             except OperationFailure:
                 if self.ordered:
                     break
 
-    def legacy_insert(self, operation, write_concern):
-        """Do a legacy insert and return the result.
-        """
-        # We have to do this here since Collection.insert
-        # throws away results and we need to check for jnote.
-        client = self.collection.database.connection
-        uuid_subtype = self.collection.uuid_subtype
-        return client._send_message(
-            insert(self.name, [operation], True, True,
-                write_concern, False, uuid_subtype), True)
-
-    def execute_legacy(self, generator, write_concern):
+    def execute_legacy(self, sock_info, generator, write_concern):
         """Execute using legacy wire protocol ops.
         """
         coll = self.collection
@@ -368,19 +358,29 @@ class _Bulk(object):
                     # at a time. That means the performance of bulk insert
                     # will be slower here than calling Collection.insert()
                     if run.op_type == _INSERT:
-                        result = self.legacy_insert(operation, write_concern)
+                        coll._insert(sock_info,
+                                     operation,
+                                     write_concern=write_concern)
+                        result = {}
                     elif run.op_type == _UPDATE:
-                        result = coll.update(operation['q'],
-                                             operation['u'],
-                                             upsert=operation['upsert'],
-                                             multi=operation['multi'],
-                                             **write_concern)
+                        doc = operation['u']
+                        check_keys = True
+                        if doc and next(iter(doc)).startswith('$'):
+                            check_keys = False
+                        result = coll._update(sock_info,
+                                              operation['q'],
+                                              doc,
+                                              operation['upsert'],
+                                              check_keys,
+                                              operation['multi'],
+                                              write_concern=write_concern)
                     else:
-                        result = coll.remove(operation['q'],
-                                             multi=(not operation['limit']),
-                                             **write_concern)
+                        result = coll._delete(sock_info,
+                                              operation['q'],
+                                              not operation['limit'],
+                                              write_concern)
                     _merge_legacy(run, full_result, result, idx)
-                except DocumentTooLarge, exc:
+                except DocumentTooLarge as exc:
                     # MongoDB 2.6 uses error code 2 for "too large".
                     error = _make_error(
                         run.index(idx), _BAD_VALUE, str(exc), operation)
@@ -388,7 +388,7 @@ class _Bulk(object):
                     if self.ordered:
                         stop = True
                         break
-                except OperationFailure, exc:
+                except OperationFailure as exc:
                     if not exc.details:
                         # Some error not related to the write operation
                         # (e.g. kerberos failure). Re-raise immediately.
@@ -418,21 +418,22 @@ class _Bulk(object):
             raise InvalidOperation('Bulk operations can '
                                    'only be executed once.')
         self.executed = True
-        client = self.collection.database.connection
-        client._ensure_connected(sync=True)
-        write_concern = write_concern or self.collection.write_concern
+        write_concern = (WriteConcern(**write_concern) if
+                         write_concern else self.collection.write_concern)
 
         if self.ordered:
             generator = self.gen_ordered()
         else:
             generator = self.gen_unordered()
 
-        if write_concern.get('w') == 0:
-            self.execute_no_results(generator)
-        elif client.max_wire_version > 1:
-            return self.execute_command(generator, write_concern)
-        else:
-            return self.execute_legacy(generator, write_concern)
+        client = self.collection.database.client
+        with client._socket_for_writes() as sock_info:
+            if not write_concern.acknowledged:
+                self.execute_no_results(sock_info, generator)
+            elif sock_info.max_wire_version > 1:
+                return self.execute_command(sock_info, generator, write_concern)
+            else:
+                return self.execute_legacy(sock_info, generator, write_concern)
 
 
 class BulkUpsertOperation(object):
@@ -544,11 +545,6 @@ class BulkOperationBuilder(object):
             in arbitrary order (possibly in parallel on the server), reporting
             any errors that occurred after attempting all operations. Defaults
             to ``True``.
-
-        .. warning::
-          If you are using a version of MongoDB older than 2.6 you will
-          get much better bulk insert performance using
-          :meth:`~pymongo.collection.Collection.insert`.
         """
         self.__bulk = _Bulk(collection, ordered)
 
@@ -563,8 +559,7 @@ class BulkOperationBuilder(object):
           - A :class:`BulkWriteOperation` instance, used to add
             update and remove operations to this bulk operation.
         """
-        if not isinstance(selector, dict):
-            raise TypeError('selector must be an instance of dict')
+        validate_is_mapping("selector", selector)
         return BulkWriteOperation(selector, self.__bulk)
 
     def insert(self, document):
@@ -582,6 +577,6 @@ class BulkOperationBuilder(object):
           - write_concern (optional): the write concern for this bulk
             execution.
         """
-        if write_concern and not isinstance(write_concern, dict):
-            raise TypeError('write_concern must be an instance of dict')
+        if write_concern is not None:
+            validate_is_mapping("write_concern", write_concern)
         return self.__bulk.execute(write_concern)
